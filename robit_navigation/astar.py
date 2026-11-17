@@ -59,6 +59,11 @@ class GridPlanner:
                     if math.hypot(px - ox, py - oy) < R:       # d < R 이면 위험
                         self.blocked[i][j] = True
 
+    def clearance(self, x, y):
+        """가장 가까운 위험 범위 테두리까지 거리 (음수 = 범위 안, 작을수록 깊이 들어감)"""
+        return min((math.hypot(x - ox, y - oy) - self.inflated_radius(r)
+                    for ox, oy, r in self.obstacles), default=float('inf'))
+
     def is_free_point(self, x, y):
         """점 하나가 안전한지 (부풀린 원 밖인지)"""
         return all(math.hypot(x - ox, y - oy) >= self.inflated_radius(r)
@@ -114,10 +119,14 @@ class GridPlanner:
                 if not self.inside(*nb) or nb in closed:
                     continue
                 cur_blocked = self.blocked[cur[0]][cur[1]]
-                # 안전한 칸에서 막힌 칸으로는 못 들어감
-                # (로봇이 이미 막힌 범위 안에 있으면 밖으로 빠져나가는 것만 허용)
-                if self.blocked[nb[0]][nb[1]] and not cur_blocked:
-                    continue
+                if self.blocked[nb[0]][nb[1]]:
+                    # 안전한 칸에서 막힌 칸으로는 못 들어감
+                    if not cur_blocked:
+                        continue
+                    # 로봇이 이미 막힌 범위 안이면: 위험물에서 멀어지는 쪽으로만 빠져나감
+                    # (안 그러면 꼬깔·공을 가로지르는 경로가 나올 수 있음)
+                    if self.clearance(*self.to_point(*nb)) <= self.clearance(*self.to_point(*cur)):
+                        continue
                 # 대각선 이동할 때 막힌 모서리를 스치지 않게
                 if di != 0 and dj != 0 and not cur_blocked:
                     if self.blocked[cur[0] + di][cur[1]] or self.blocked[cur[0]][cur[1] + dj]:

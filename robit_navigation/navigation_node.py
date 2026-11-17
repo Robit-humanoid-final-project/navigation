@@ -5,6 +5,8 @@
   /robot_pose        geometry_msgs/Pose2D       내 위치 x, y [m], theta(yaw) [rad]   <- Localization 대신
   /nav_goal          geometry_msgs/Pose2D       목표 x, y [m], theta [rad]          <- Taskplanner 대신
   /goal_pose         geometry_msgs/PoseStamped  RViz2 "2D Goal Pose" 버튼으로 찍은 목표 (테스트용)
+  /ball_pose         geometry_msgs/PointStamped 공 위치 <- Vision/Localization 대신
+                     header.frame_id = "map": 필드 기준 / 그 밖: 로봇 기준 (x 앞, y 왼쪽)
   /vision_obstacles  geometry_msgs/PoseArray    지금 카메라에 보이는 꼬깔 <- Vision (vision_packages의 obstacle[] 대신)
                      header.frame_id = "base_footprint": position.x 앞, position.y 왼쪽 [m] (로봇 기준)
                      header.frame_id = "map": 필드 기준 (테스트용)
@@ -16,6 +18,10 @@
   /nav_path          nav_msgs/Path              A-star 경로 (RViz2 표시용)
   /nav_debug         visualization_msgs/MarkerArray  목표, 기억한 꼬깔 범위, 당근, 상태 글자 (RViz2 표시용)
 
+공 피하기 (avoid_ball = True):
+  공도 장애물로 피하고, 목표가 공 바로 옆(킥 자리)이면 공 반대편으로 돌아가서 똑바로 들어감
+  = 공을 밀지 않고 차는 자리에 섬
+
 이동, 회전 모두 PID 제어 (ki, kd = 0 이면 P만)
 튜닝 값은 실행 중에도 바꿀 수 있음 (빌드 다시 안 해도 됨):
   ros2 param set /navigation_node ki_move 0.5
@@ -26,13 +32,14 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
-from geometry_msgs.msg import Pose2D, PoseArray, PoseStamped, Twist
+from geometry_msgs.msg import PointStamped, Pose2D, PoseArray, PoseStamped, Twist
 from nav_msgs.msg import Path
 from std_msgs.msg import String
 from visualization_msgs.msg import Marker, MarkerArray
 
 from robit_navigation.astar import GridPlanner
-from robit_navigation.nav_core import ControllerParams, PathFollower
+from robit_navigation.ball_approach import plan_path
+from robit_navigation.nav_core import ControllerParams, PathFollower, robot_to_field
 from robit_navigation.obstacle_memory import ObstacleMemory, ObstacleMemoryParams
 
 FRAME = 'map'
@@ -54,6 +61,10 @@ TUNABLE = {
     'margin': 0.15,            # 추가 여유 (m)
     'cone_radius': 0.1,        # 꼬깔 바닥 반지름 (m)
     'replan_period': 1.0,      # 몇 초마다 다시 계획
+    # 공 피하기
+    'avoid_ball': True,        # True: 공을 밀지 않게 돌아서 감 / False: 공 무시
+    'ball_radius': 0.075,      # 공 반지름 (m)
+    'approach_margin': 0.2,    # 킥 자리 진입점을 공 위험 범위보다 얼마나 바깥에 (m)
 }
 # 시작할 때만 읽는 값
 STARTUP_ONLY = {
@@ -88,6 +99,7 @@ class NavigationNode(Node):
         self.robot = None          # 아직 위치를 못 받았으면 None
         self.goal = None           # 아직 목표를 못 받았으면 None
         self.obstacles = []        # 계획에 쓰는 꼬깔 [(x, y, 반지름), ...] (필드 기준)
+        self.ball = None           # 공 위치 (x, y) (필드 기준), 모르면 None
         self.path = None
         self.need_replan = False
         self.last_plan_time = None
@@ -105,6 +117,7 @@ class NavigationNode(Node):
         self.create_subscription(Pose2D, 'nav_goal', self.on_goal, 10)
         self.create_subscription(PoseStamped, 'goal_pose', self.on_click_goal, 10)
         self.create_subscription(PoseArray, 'vision_obstacles', self.on_obstacles, 10)
+        self.create_subscription(PointStamped, 'ball_pose', self.on_ball, 10)
         # 보내기
         self.cmd_pub = self.create_publisher(Twist, 'nav_cmd', 10)
         self.status_pub = self.create_publisher(String, 'nav_status', 10)
@@ -148,6 +161,9 @@ class NavigationNode(Node):
             tol_dist=p('tol_dist'), tol_yaw=math.radians(p('tol_yaw_deg')))
         self.cone_radius = p('cone_radius')
         self.replan_period = p('replan_period')
+        self.avoid_ball = bool(self.get_parameter('avoid_ball').value)
+        self.ball_radius = p('ball_radius')
+        self.approach_margin = p('approach_margin')
         self.obstacles = [(x, y, self.cone_radius) for x, y, _ in self.obstacles]
         self.follower = PathFollower(cp, int(self.get_parameter('carrot_points').value))
         hl, hw = self.field_l / 2.0, self.field_w / 2.0
@@ -188,16 +204,29 @@ class NavigationNode(Node):
         if changed:
             self.need_replan = True     # 꼬깔이 새로 보이거나 사라지면 바로 다시 계획
 
+    def on_ball(self, msg):
+        if msg.header.frame_id == FRAME:
+            ball = (msg.point.x, msg.point.y)             # 필드 기준
+        else:
+            if self.robot is None:
+                return
+            ball = robot_to_field(self.robot, msg.point.x, msg.point.y)   # 로봇 기준 -> 필드 기준
+        # 공이 5cm 넘게 움직였으면 바로 다시 계획
+        if self.ball is None or math.hypot(ball[0] - self.ball[0], ball[1] - self.ball[1]) > 0.05:
+            self.need_replan = True
+        self.ball = ball
+
     # ---------------- 경로 계획 ----------------
     def replan(self):
-        self.planner.set_obstacles(self.obstacles)
-        self.path = self.planner.plan(self.robot[:2], self.goal[:2])
+        ball = self.ball if self.avoid_ball else None
+        self.path = plan_path(self.planner, self.robot[:2], self.goal[:2], self.obstacles,
+                              ball, self.ball_radius, self.approach_margin)
         self.last_plan_time = self.get_clock().now()
         self.need_replan = False
         if self.path is None:
             # 같은 경고가 계속 쌓이지 않게 5초에 한 번만 출력
             self.get_logger().warn(
-                '경로를 찾지 못함 (목표가 꼬깔 범위 안이거나 길이 막힘)', throttle_duration_sec=5.0)
+                '경로를 찾지 못함 (목표가 꼬깔·공 범위 안이거나 길이 막힘)', throttle_duration_sec=5.0)
         self.publish_path()
 
     def time_to_replan(self):
@@ -278,6 +307,14 @@ class NavigationNode(Node):
             m = self.make_marker('inflated', k, Marker.CYLINDER, 1.0, 0.5, 0.0, 0.25)
             m.pose.position.x, m.pose.position.y = float(ox), float(oy)
             m.scale.x = m.scale.y = 2.0 * self.planner.inflated_radius(r)
+            m.scale.z = 0.01
+            arr.markers.append(m)
+
+        # 공의 위험 범위 (연한 하얀 원판) = 로봇 중심이 들어가면 공을 밀게 되는 곳
+        if self.ball is not None and self.avoid_ball:
+            m = self.make_marker('ball_zone', 0, Marker.CYLINDER, 1.0, 1.0, 1.0, 0.2)
+            m.pose.position.x, m.pose.position.y = float(self.ball[0]), float(self.ball[1])
+            m.scale.x = m.scale.y = 2.0 * self.planner.inflated_radius(self.ball_radius)
             m.scale.z = 0.01
             arr.markers.append(m)
 

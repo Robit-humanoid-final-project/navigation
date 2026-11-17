@@ -12,6 +12,7 @@ from launch_ros.actions import Node
 FIELD = {'field_length': 9.0, 'field_width': 6.0}   # 예시 값
 CONE_RADIUS = 0.1                                   # 꼬깔 바닥 반지름 (m)
 ROBOT_RADIUS = 0.2                                  # 로봇 몸통 반지름 (m)
+BALL_RADIUS = 0.075                                 # 공 반지름 (m)
 CAMERA = {'view_angle_deg': 60.0, 'view_range': 3.0}   # 카메라 시야 (Vision과 맞추기)
 
 
@@ -47,6 +48,10 @@ def generate_launch_description():
                 'cone_radius': CONE_RADIUS,
                 'carrot_points': 5,
                 'replan_period': 1.0,
+                # 공 피하기 (공을 밀지 않고 킥 자리로)
+                'avoid_ball': True,
+                'ball_radius': BALL_RADIUS,
+                'approach_margin': 0.2,
                 # 꼬깔 기억
                 'merge_dist': 0.3,
                 'min_hits': 2,
@@ -67,6 +72,9 @@ def generate_launch_description():
                 'cones_y': [-1.2, 0.0, -0.5],
                 'cone_radius': CONE_RADIUS,
                 'robot_radius': ROBOT_RADIUS,
+                'ball_x': 0.0,         # 가짜 공 처음 위치 (필드 기준, m)
+                'ball_y': 1.0,
+                'ball_radius': BALL_RADIUS,
                 'vision_noise': 0.03,  # 가짜 Vision 위치 오차 (m)
                 'slip': 0.0,           # 걸을 때 뒤로 미끄러지는 속도 (m/s), PID 실험용
             }],
