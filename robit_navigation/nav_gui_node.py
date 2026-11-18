@@ -15,7 +15,8 @@
 로봇마다 (robot1, robot2):
   받는 토픽:  /robotN/robot_pose, /robotN/nav_path, /robotN/nav_status, /robotN/nav_cmd,
               /robotN/nav_markers (가짜 로봇 그림), /robotN/nav_debug (내비게이션 그림)
-  보내는 토픽: /robotN/nav_goal (목표), /robotN/initialpose (로봇 옮기기)
+  보내는 토픽: /robotN/nav_goal (목표), /robotN/nav_cancel (목표 취소: Stop, Reset),
+              /robotN/initialpose (로봇 옮기기)
 같이 쓰는 토픽: /ball_pose (받음), /clicked_point (공 옮기기, 보냄)
 튜닝 값은 ROS2 파라미터로 바꿈 (ros2 param set 과 같음)
 """
@@ -29,7 +30,7 @@ from rclpy.parameter import Parameter, parameter_value_to_python
 from rclpy.parameter_client import AsyncParameterClient
 from geometry_msgs.msg import Point, PointStamped, Pose2D, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Path
-from std_msgs.msg import String
+from std_msgs.msg import Empty, String
 from visualization_msgs.msg import Marker, MarkerArray
 
 from python_qt_binding.QtCore import QPointF, QRectF, Qt, QTimer
@@ -111,7 +112,7 @@ class NavGuiNode(Node):
         self.ball = None           # (x, y)
         self.markers = {}          # (로봇, 토픽, ns, id) -> Marker
         self.log = None            # 화면 기록 함수 (창에서 연결)
-        self.goal_pub, self.init_pub, self.params = {}, {}, {}
+        self.goal_pub, self.init_pub, self.cancel_pub, self.params = {}, {}, {}, {}
 
         for n in self.names:
             t = f'/{n}/' if n else '/'
@@ -125,6 +126,7 @@ class NavGuiNode(Node):
                                      lambda m, n=n: self.on_markers(n, 'nav', m), 10)
             self.goal_pub[n] = self.create_publisher(Pose2D, t + 'nav_goal', 10)
             self.init_pub[n] = self.create_publisher(PoseWithCovarianceStamped, t + 'initialpose', 10)
+            self.cancel_pub[n] = self.create_publisher(Empty, t + 'nav_cancel', 10)
             for kind in ('navigation_node', 'fake_robot_node'):
                 self.params[(n, kind)] = AsyncParameterClient(self, t + kind)
 
@@ -179,6 +181,10 @@ class NavGuiNode(Node):
     def send_goal(self, x, y, yaw):
         self.goal_pub[self.selected].publish(Pose2D(x=float(x), y=float(y), theta=float(yaw)))
         self.log(f'{self.selected} 목표 보냄: ({x:.2f}, {y:.2f}), {math.degrees(yaw):.0f}도')
+
+    def send_cancel(self):
+        self.cancel_pub[self.selected].publish(Empty())
+        self.log(f'{self.selected} 목표 취소 (멈춤)')
 
     def send_robot(self, x, y, yaw):
         msg = PoseWithCovarianceStamped()
@@ -603,9 +609,12 @@ class MainWindow(QMainWindow):
             button.clicked.connect(fn)
             g.addWidget(button, r, 4)
 
-        reset = QPushButton('Reset')
+        reset = QPushButton('Reset')          # 목표 취소 + 시작 위치로
         reset.clicked.connect(self.on_reset)
-        g.addWidget(reset, 1, 5, 3, 1)
+        g.addWidget(reset, 1, 5)
+        stop = QPushButton('Stop')            # 목표 취소 (그 자리에 멈춤)
+        stop.clicked.connect(self.node.send_cancel)
+        g.addWidget(stop, 2, 5)
 
         logo = QFrame()
         logo.setObjectName('logo')
@@ -697,6 +706,7 @@ class MainWindow(QMainWindow):
         self.node.send_ball(self.bx.value(), self.by.value())
 
     def on_reset(self):
+        self.node.send_cancel()               # 예전 목표로 다시 출발하지 않게 먼저 취소
         st = self.node.starts.get(self.node.selected, (-3.0, -3.0, 90.0))
         self.set_robot_inputs(st[0], st[1], math.radians(st[2]))
         self.on_set_robot()

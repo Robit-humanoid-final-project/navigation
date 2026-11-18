@@ -27,6 +27,7 @@ Ubuntu 24.04 + ROS2 Jazzy 기준.
 | `/nav_goal` | geometry_msgs/Pose2D | 받음 | 목표 x, y [m], theta [rad] (Taskplanner) |
 | `/vision_obstacles` | geometry_msgs/PoseArray | 받음 | 카메라에 보이는 꼬깔, frame_id `base_footprint`: x 앞, y 왼쪽 [m] (Vision `vision_packages`의 obstacle[] 대신) |
 | `/ball_pose` | geometry_msgs/PointStamped | 받음 | 공 위치, frame_id `map`이면 필드 기준, 그 밖은 로봇 기준 (x 앞, y 왼쪽) [m] |
+| `/nav_cancel` | std_msgs/Empty | 받음 | 목표 취소: 멈추고 IDLE (Taskplanner, UI의 Stop·Reset) |
 | `/teammate_pose` | geometry_msgs/Pose2D | 받음 | 우리 팀 다른 로봇 위치 x, y [m] (필드 기준, 실제로는 UDP) |
 | `/goal_pose` | geometry_msgs/PoseStamped | 받음 | RViz2 "2D Goal Pose"로 찍은 목표 (테스트용) |
 | `/nav_cmd` | geometry_msgs/Twist | 보냄 | linear.x 앞, linear.y 왼쪽 [m/s], angular.z 회전 [rad/s] (Taskplanner) |
@@ -65,7 +66,7 @@ ros2 launch robit_navigation sim.launch.py rviz:=true
 |---|---|
 | 왼쪽 위 | 필드: 로봇(파란 네모), 꼬깔, 공, 경로, 위험 범위, 카메라 시야 |
 | 오른쪽 위 | 로봇 기준 화면 (로봇이 보는 방향 = 위), 상태, 걸음 명령 |
-| 왼쪽 아래 | 조작할 로봇 고르기 (Robot 1 / 2), Robot / Goal / Ball 위치 입력 → Set, Go / Reset (시작 위치로) |
+| 왼쪽 아래 | 조작할 로봇 고르기 (Robot 1 / 2), Robot / Goal / Ball 위치 입력 → Set, Go / Stop (목표 취소, 그 자리에 멈춤) / Reset (목표 취소 + 시작 위치로) |
 | 오른쪽 아래 | 튜닝 탭 (PID, Path, Fake Robot): 값 넣고 Apply, Read = 지금 값 읽기 / Text = 기록 |
 
 필드 위 마우스: 왼쪽 클릭 후 끌기 = 목표, 오른쪽 클릭 = 공 옮기기, Ctrl + 왼쪽 끌기 = 로봇 옮기기

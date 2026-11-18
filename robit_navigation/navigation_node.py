@@ -4,6 +4,7 @@
 받는 토픽 (임시 이름, 팀 합의 후 변경):
   /robot_pose        geometry_msgs/Pose2D       내 위치 x, y [m], theta(yaw) [rad]   <- Localization 대신
   /nav_goal          geometry_msgs/Pose2D       목표 x, y [m], theta [rad]          <- Taskplanner 대신
+  /nav_cancel        std_msgs/Empty             목표 취소: 멈추고 IDLE (Taskplanner, UI의 Stop·Reset)
   /goal_pose         geometry_msgs/PoseStamped  RViz2 "2D Goal Pose" 버튼으로 찍은 목표 (테스트용)
   /ball_pose         geometry_msgs/PointStamped 공 위치 <- Vision/Localization 대신
                      header.frame_id = "map": 필드 기준 / 그 밖: 로봇 기준 (x 앞, y 왼쪽)
@@ -37,7 +38,7 @@ from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
 from geometry_msgs.msg import PointStamped, Pose2D, PoseArray, PoseStamped, Twist
 from nav_msgs.msg import Path
-from std_msgs.msg import String
+from std_msgs.msg import Empty, String
 from visualization_msgs.msg import Marker, MarkerArray
 
 from robit_navigation.astar import GridPlanner
@@ -128,6 +129,7 @@ class NavigationNode(Node):
         # 받기
         self.create_subscription(Pose2D, 'robot_pose', self.on_pose, 10)
         self.create_subscription(Pose2D, 'nav_goal', self.on_goal, 10)
+        self.create_subscription(Empty, 'nav_cancel', self.on_cancel, 10)
         self.create_subscription(PoseStamped, 'goal_pose', self.on_click_goal, 10)
         self.create_subscription(PoseArray, 'vision_obstacles', self.on_obstacles, 10)
         self.create_subscription(PointStamped, 'ball_pose', self.on_ball, 10)
@@ -197,6 +199,16 @@ class NavigationNode(Node):
         q = msg.pose.orientation
         yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         self.on_goal(Pose2D(x=msg.pose.position.x, y=msg.pose.position.y, theta=yaw))
+
+    def on_cancel(self, _msg):
+        """목표 취소: 목표와 경로를 지우고 멈춤 (다음 반복에서 IDLE, 정지 명령)"""
+        if self.goal is None:
+            return
+        self.goal = None
+        self.path = None
+        self.follower.reset()
+        self.publish_path()             # 화면의 경로도 지움
+        self.get_logger().info('목표 취소')
 
     def on_goal(self, msg):
         self.goal = (msg.x, msg.y, msg.theta)
