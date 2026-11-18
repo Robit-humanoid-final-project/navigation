@@ -13,6 +13,8 @@
             /clicked_point (PointStamped, RViz2 "Publish Point" 버튼 -> 공 옮기기)
 보내는 토픽: /robot_pose (Pose2D), /vision_obstacles (PoseArray, 로봇 기준),
             /ball_pose (PointStamped, 필드 기준), /nav_markers (MarkerArray)
+로봇 2대일 때: 공은 has_ball = True 인 가짜 로봇 하나만 가지고 있고, 두 로봇 모두 공을 밀 수 있다.
+            /teammate_pose (Pose2D) 로 다른 로봇 위치를 받아서 부딪히면 경고한다.
 """
 import math
 import random
@@ -42,11 +44,12 @@ class FakeRobotNode(Node):
         self.declare_parameter('cones_x', [-1.0, 1.0, 2.2])
         self.declare_parameter('cones_y', [-1.2, 0.0, -0.5])
         self.declare_parameter('cone_radius', 0.1)
-        self.declare_parameter('robot_radius', 0.2)
+        self.declare_parameter('robot_radius', 0.15)
         # 가짜 공 (필드 기준, m)
         self.declare_parameter('ball_x', 0.0)
         self.declare_parameter('ball_y', 1.0)
-        self.declare_parameter('ball_radius', 0.075)
+        self.declare_parameter('ball_radius', 0.07)
+        self.declare_parameter('has_ball', True)   # 로봇 2대일 때 공은 한 쪽만 가짐
         # 가짜 Vision 카메라
         self.declare_parameter('view_angle_deg', 60.0)   # 카메라 시야 전체 각도
         self.declare_parameter('view_range', 3.0)        # 꼬깔을 볼 수 있는 거리 (m)
@@ -67,6 +70,9 @@ class FakeRobotNode(Node):
         self.view_range = p('view_range')
         self.ball = [p('ball_x'), p('ball_y')]
         self.ball_r = p('ball_radius')
+        self.has_ball = p('has_ball')
+        self.teammate = None       # 다른 로봇 위치 (x, y)
+        self.bumping = False
         self.pushing = False
 
         self.cmd = Twist()
@@ -75,8 +81,10 @@ class FakeRobotNode(Node):
 
         self.create_subscription(Twist, 'nav_cmd', self.on_cmd, 10)
         self.create_subscription(PoseWithCovarianceStamped, 'initialpose', self.on_initialpose, 10)
-        self.create_subscription(PointStamped, 'clicked_point', self.on_clicked_point, 10)
-        self.ball_pub = self.create_publisher(PointStamped, 'ball_pose', 10)
+        self.create_subscription(Pose2D, 'teammate_pose', self.on_teammate, 10)
+        if self.has_ball:
+            self.create_subscription(PointStamped, 'clicked_point', self.on_clicked_point, 10)
+            self.ball_pub = self.create_publisher(PointStamped, 'ball_pose', 10)
         self.pose_pub = self.create_publisher(Pose2D, 'robot_pose', 10)
         self.vision_pub = self.create_publisher(PoseArray, 'vision_obstacles', 10)
         self.marker_pub = self.create_publisher(MarkerArray, 'nav_markers', 10)
@@ -98,6 +106,9 @@ class FakeRobotNode(Node):
         self.trail = []
         self.get_logger().info(
             f'로봇 위치 옮김: ({self.x:.2f}, {self.y:.2f}), {math.degrees(self.yaw):.0f}도')
+
+    def on_teammate(self, msg):
+        self.teammate = (msg.x, msg.y)
 
     def on_clicked_point(self, msg):
         """RViz2 "Publish Point": 찍은 곳으로 공을 옮긴다"""
@@ -125,28 +136,44 @@ class FakeRobotNode(Node):
             self.get_logger().warn('꼬깔에 닿음!')
         self.touching = touching
 
-        # 공에 닿았으면 공을 밀어낸다 (로봇 몸 바깥으로)
-        dx, dy = self.ball[0] - self.x, self.ball[1] - self.y
-        d, touch_d = math.hypot(dx, dy), self.robot_r + self.ball_r
-        pushing = d < touch_d
-        if pushing:
-            if d < 1e-6:
-                dx, dy, d = math.cos(self.yaw), math.sin(self.yaw), 1.0
-            self.ball = [self.x + dx / d * touch_d, self.y + dy / d * touch_d]
-            if not self.pushing:
-                self.get_logger().warn('공을 밀었음!')
-        self.pushing = pushing
-        ball = PointStamped()
-        ball.header.frame_id = FRAME
-        ball.header.stamp = self.get_clock().now().to_msg()
-        ball.point.x, ball.point.y = float(self.ball[0]), float(self.ball[1])
-        self.ball_pub.publish(ball)
+        # 다른 로봇과 부딪혔는지 검사
+        bumping = (self.teammate is not None and
+                   math.hypot(self.x - self.teammate[0], self.y - self.teammate[1]) < 2.0 * self.robot_r)
+        if bumping and not self.bumping:
+            self.get_logger().warn('다른 로봇과 부딪힘!')
+        self.bumping = bumping
+
+        if self.has_ball:
+            self.update_ball()
 
         # 지나온 길 저장 (2cm 이상 움직였을 때만)
         if not self.trail or math.hypot(self.x - self.trail[-1][0], self.y - self.trail[-1][1]) > 0.02:
             self.trail.append((self.x, self.y))
             self.trail = self.trail[-2000:]
         self.publish_markers()
+
+    def update_ball(self):
+        """공에 닿은 로봇(나, 다른 로봇)이 있으면 공을 로봇 몸 바깥으로 밀어낸다"""
+        robots = [('', self.x, self.y, self.yaw)]
+        if self.teammate is not None:
+            robots.append(('다른 로봇이 ', self.teammate[0], self.teammate[1], 0.0))
+        pushing = False
+        for who, rx, ry, ryaw in robots:
+            dx, dy = self.ball[0] - rx, self.ball[1] - ry
+            d, touch_d = math.hypot(dx, dy), self.robot_r + self.ball_r
+            if d < touch_d:
+                if d < 1e-6:
+                    dx, dy, d = math.cos(ryaw), math.sin(ryaw), 1.0
+                self.ball = [rx + dx / d * touch_d, ry + dy / d * touch_d]
+                if not self.pushing:
+                    self.get_logger().warn(f'{who}공을 밀었음!')
+                pushing = True
+        self.pushing = pushing
+        ball = PointStamped()
+        ball.header.frame_id = FRAME
+        ball.header.stamp = self.get_clock().now().to_msg()
+        ball.point.x, ball.point.y = float(self.ball[0]), float(self.ball[1])
+        self.ball_pub.publish(ball)
 
     def publish_vision(self):
         """가짜 Vision: 시야 안 꼬깔만 로봇 기준(앞, 왼쪽)으로 + 오차"""
@@ -232,10 +259,11 @@ class FakeRobotNode(Node):
         arr.markers.append(floor)
 
         # 4: 공 (하얀 공)
-        m = self.make_marker(4, Marker.SPHERE, 1.0, 1.0, 1.0)
-        m.pose.position.x, m.pose.position.y, m.pose.position.z = self.ball[0], self.ball[1], self.ball_r
-        m.scale.x = m.scale.y = m.scale.z = 2.0 * self.ball_r
-        arr.markers.append(m)
+        if self.has_ball:
+            m = self.make_marker(4, Marker.SPHERE, 1.0, 1.0, 1.0)
+            m.pose.position.x, m.pose.position.y, m.pose.position.z = self.ball[0], self.ball[1], self.ball_r
+            m.scale.x = m.scale.y = m.scale.z = 2.0 * self.ball_r
+            arr.markers.append(m)
 
         self.marker_pub.publish(arr)
 

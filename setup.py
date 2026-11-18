@@ -24,6 +24,7 @@ setup(
         'console_scripts': [
             'navigation_node = robit_navigation.navigation_node:main',
             'fake_robot_node = robit_navigation.fake_robot_node:main',
+            'nav_gui_node = robit_navigation.nav_gui_node:main',
         ],
     },
 )

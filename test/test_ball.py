@@ -5,7 +5,7 @@ from robit_navigation.astar import GridPlanner
 from robit_navigation.ball_approach import plan_path
 from robit_navigation.nav_core import ControllerParams, PathFollower, normalize_angle
 
-BALL_R, ROBOT_R = 0.075, 0.2
+BALL_R, ROBOT_R = 0.07, 0.15
 R = math.radians
 
 
@@ -14,7 +14,7 @@ def make_planner():
 
 
 def simulate(start, goal, ball, cones=(), avoid_ball=True, max_time=60.0):
-    """반환: 도착 여부, 마지막 위치, 로봇 몸과 공 사이 최소 거리"""
+    """반환: 도착 여부, 마지막 위치, 로봇 몸과 공·꼬깔 사이 최소 거리 (음수 = 닿음)"""
     planner = make_planner()
     follower = PathFollower(ControllerParams(), 5)
     x, y, yaw = start
@@ -31,7 +31,8 @@ def simulate(start, goal, ball, cones=(), avoid_ball=True, max_time=60.0):
         x += (cs * c.front - sn * c.left) * dt
         y += (sn * c.front + cs * c.left) * dt
         yaw = normalize_angle(yaw + c.turn * dt)
-        min_gap = min(min_gap, math.hypot(x - ball[0], y - ball[1]) - ROBOT_R - BALL_R)
+        min_gap = min(min_gap, math.hypot(x - ball[0], y - ball[1]) - ROBOT_R - BALL_R,
+                      *[math.hypot(x - cx, y - cy) - ROBOT_R - cr for cx, cy, cr in cones])
     return False, (x, y, yaw), min_gap
 
 
@@ -92,3 +93,18 @@ def test_all_directions():
 def test_goal_touching_ball_is_rejected():
     # 목표에 서기만 해도 몸이 공에 닿으면 경로 없음 (BLOCKED)
     assert plan_path(make_planner(), (1.0, 1.0), (0.2, 1.0), [], (0.0, 1.0), BALL_R) is None
+
+
+def test_ball_right_behind_cone():
+    # 공이 꼬깔 바로 뒤에 있고, 꼬깔 위치를 몇 cm 잘못 알아도 (Vision 오차) 길을 찾음
+    ball = (2.0, 0.0)
+    for cone_x in (1.0, 1.03, 1.08, 1.15):
+        cones = [(-1.0, -1.2, 0.1), (cone_x, 0.0, 0.1), (2.2, -0.5, 0.1)]
+        ok, _, gap = simulate((-3.0, -3.0, R(90)), (1.7, 0.0, 0.0), ball, cones)
+        assert ok and gap > 0.0, cone_x       # 공에도 꼬깔에도 안 닿음
+
+
+def test_kick_spot_inside_cone_is_rejected():
+    # 킥 자리가 꼬깔 범위 안이면 경로 없음 (BLOCKED)
+    cones = [(1.5, 0.0, 0.1)]
+    assert plan_path(make_planner(), (-1.0, 0.0), (1.7, 0.0), cones, (2.0, 0.0), BALL_R) is None

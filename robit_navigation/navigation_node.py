@@ -7,6 +7,9 @@
   /goal_pose         geometry_msgs/PoseStamped  RViz2 "2D Goal Pose" 버튼으로 찍은 목표 (테스트용)
   /ball_pose         geometry_msgs/PointStamped 공 위치 <- Vision/Localization 대신
                      header.frame_id = "map": 필드 기준 / 그 밖: 로봇 기준 (x 앞, y 왼쪽)
+  /teammate_pose     geometry_msgs/Pose2D       우리 팀 다른 로봇 위치 (필드 기준) <- UDP 대신
+                     꼬깔처럼 피함 (움직이니까 계속 다시 계획). 1초 넘게 안 오면 무시
+                     양보(yield_to_teammate)나 안전 정지 때는 멈추고 WAITING
   /vision_obstacles  geometry_msgs/PoseArray    지금 카메라에 보이는 꼬깔 <- Vision (vision_packages의 obstacle[] 대신)
                      header.frame_id = "base_footprint": position.x 앞, position.y 왼쪽 [m] (로봇 기준)
                      header.frame_id = "map": 필드 기준 (테스트용)
@@ -14,7 +17,7 @@
 
 보내는 토픽 (임시 이름, 팀 합의 후 변경):
   /nav_cmd           geometry_msgs/Twist        linear.x 앞, linear.y 왼쪽 [m/s], angular.z 회전 [rad/s]
-  /nav_status        std_msgs/String            IDLE / MOVING / ARRIVED / NO_POSE / BLOCKED
+  /nav_status        std_msgs/String            IDLE / MOVING / ARRIVED / NO_POSE / BLOCKED / WAITING
   /nav_path          nav_msgs/Path              A-star 경로 (RViz2 표시용)
   /nav_debug         visualization_msgs/MarkerArray  목표, 기억한 꼬깔 범위, 당근, 상태 글자 (RViz2 표시용)
 
@@ -38,7 +41,8 @@ from std_msgs.msg import String
 from visualization_msgs.msg import Marker, MarkerArray
 
 from robit_navigation.astar import GridPlanner
-from robit_navigation.ball_approach import plan_path
+from robit_navigation.teammate import (SpeedEstimator, look_ahead_point, plan_with_teammate,
+                                      should_yield, too_close)
 from robit_navigation.nav_core import ControllerParams, PathFollower, robot_to_field
 from robit_navigation.obstacle_memory import ObstacleMemory, ObstacleMemoryParams
 
@@ -57,14 +61,19 @@ TUNABLE = {
     'tol_dist': 0.10,          # m
     'tol_yaw_deg': 10.0,       # 도
     'carrot_points': 5,        # 당근: 몇 개 앞 점
-    'robot_radius': 0.2,       # 로봇 몸통 반지름 (m)
+    'robot_radius': 0.15,      # 로봇 25 x 17cm를 덮는 원 반지름 (m)
     'margin': 0.15,            # 추가 여유 (m)
-    'cone_radius': 0.1,        # 꼬깔 바닥 반지름 (m)
+    'cone_radius': 0.1,        # 꼬깔 14 x 14cm를 덮는 원 반지름 (m)
     'replan_period': 1.0,      # 몇 초마다 다시 계획
     # 공 피하기
     'avoid_ball': True,        # True: 공을 밀지 않게 돌아서 감 / False: 공 무시
-    'ball_radius': 0.075,      # 공 반지름 (m)
+    'ball_radius': 0.07,       # 공 반지름 (지름 14cm) (m)
     'approach_margin': 0.2,    # 킥 자리 진입점을 공 위험 범위보다 얼마나 바깥에 (m)
+    # 우리 팀 다른 로봇 피하기
+    'teammate_radius': 0.15,   # 다른 로봇 몸통 반지름 (m)
+    'yield_to_teammate': False,   # True: 다른 로봇이 가까이서 움직이면 멈춰서 양보 (한 로봇만 True)
+    'yield_dist': 0.9,         # 이 거리 안에서 양보 (m)
+    'stop_dist': 0.45,         # 다른 로봇이 바로 앞 이 거리 안이면 안전 정지 (m)
 }
 # 시작할 때만 읽는 값
 STARTUP_ONLY = {
@@ -100,6 +109,10 @@ class NavigationNode(Node):
         self.goal = None           # 아직 목표를 못 받았으면 None
         self.obstacles = []        # 계획에 쓰는 꼬깔 [(x, y, 반지름), ...] (필드 기준)
         self.ball = None           # 공 위치 (x, y) (필드 기준), 모르면 None
+        self.teammate = None       # 다른 로봇 위치 (x, y) (필드 기준), 모르면 None
+        self.teammate_time = None  # 다른 로봇 위치를 마지막으로 받은 시간
+        self.teammate_planned = None   # 경로 계획할 때 쓴 다른 로봇 위치
+        self.teammate_speed = SpeedEstimator()
         self.path = None
         self.need_replan = False
         self.last_plan_time = None
@@ -118,6 +131,7 @@ class NavigationNode(Node):
         self.create_subscription(PoseStamped, 'goal_pose', self.on_click_goal, 10)
         self.create_subscription(PoseArray, 'vision_obstacles', self.on_obstacles, 10)
         self.create_subscription(PointStamped, 'ball_pose', self.on_ball, 10)
+        self.create_subscription(Pose2D, 'teammate_pose', self.on_teammate, 10)
         # 보내기
         self.cmd_pub = self.create_publisher(Twist, 'nav_cmd', 10)
         self.status_pub = self.create_publisher(String, 'nav_status', 10)
@@ -164,6 +178,10 @@ class NavigationNode(Node):
         self.avoid_ball = bool(self.get_parameter('avoid_ball').value)
         self.ball_radius = p('ball_radius')
         self.approach_margin = p('approach_margin')
+        self.teammate_radius = p('teammate_radius')
+        self.yield_to_teammate = bool(self.get_parameter('yield_to_teammate').value)
+        self.yield_dist = p('yield_dist')
+        self.stop_dist = p('stop_dist')
         self.obstacles = [(x, y, self.cone_radius) for x, y, _ in self.obstacles]
         self.follower = PathFollower(cp, int(self.get_parameter('carrot_points').value))
         hl, hw = self.field_l / 2.0, self.field_w / 2.0
@@ -216,17 +234,37 @@ class NavigationNode(Node):
             self.need_replan = True
         self.ball = ball
 
+    def on_teammate(self, msg):
+        self.teammate = (msg.x, msg.y)
+        self.teammate_time = self.get_clock().now()
+        self.teammate_speed.update(msg.x, msg.y, self.teammate_time.nanoseconds * 1e-9)
+        # 다른 로봇이 계획할 때보다 15cm 넘게 움직였으면 바로 다시 계획
+        if (self.teammate_planned is None
+                or math.hypot(msg.x - self.teammate_planned[0], msg.y - self.teammate_planned[1]) > 0.15):
+            self.need_replan = True
+
+    def teammate_now(self):
+        """믿을 만한 다른 로봇 위치 (1초 넘게 안 왔으면 None)"""
+        if self.teammate is None:
+            return None
+        age = (self.get_clock().now() - self.teammate_time).nanoseconds * 1e-9
+        return self.teammate if age < 1.0 else None
+
     # ---------------- 경로 계획 ----------------
     def replan(self):
         ball = self.ball if self.avoid_ball else None
-        self.path = plan_path(self.planner, self.robot[:2], self.goal[:2], self.obstacles,
-                              ball, self.ball_radius, self.approach_margin)
+        mate = self.teammate_now()
+        self.teammate_planned = mate
+        # 다른 로봇 = 움직이는 꼬깔 (다른 로봇 때문에 길이 없으면 빼고 다시: 곧 비킬 테니까)
+        self.path = plan_with_teammate(self.planner, self.robot[:2], self.goal[:2], self.obstacles,
+                                       mate, self.teammate_radius,
+                                       ball, self.ball_radius, self.approach_margin)
         self.last_plan_time = self.get_clock().now()
         self.need_replan = False
         if self.path is None:
             # 같은 경고가 계속 쌓이지 않게 5초에 한 번만 출력
             self.get_logger().warn(
-                '경로를 찾지 못함 (목표가 꼬깔·공 범위 안이거나 길이 막힘)', throttle_duration_sec=5.0)
+                '경로를 찾지 못함 (목표가 꼬깔·공·다른 로봇 범위 안이거나 길이 막힘)', throttle_duration_sec=5.0)
         self.publish_path()
 
     def time_to_replan(self):
@@ -259,6 +297,17 @@ class NavigationNode(Node):
         if dt <= 0.0 or dt > 0.5:
             dt = 1.0 / self.rate   # 처음이거나 너무 오래 멈췄으면 기본 주기로
         self.last_step_time = t
+
+        # 다른 로봇: 바로 앞에 붙었으면 안전 정지, 양보하는 로봇이면 기다림
+        mate = self.teammate_now()
+        if mate is not None and len(self.path) >= 2:
+            toward = look_ahead_point(self.path, self.robot, self.follower.carrot_points)
+            if (too_close(self.robot, toward, mate, self.stop_dist) or
+                    (self.yield_to_teammate and
+                     should_yield(self.robot, toward, mate, self.teammate_speed.speed, self.yield_dist))):
+                self.publish(cmd, 'WAITING')
+                self.publish_debug(None)
+                return
 
         c = self.follower.step(self.robot, self.path, self.goal, dt)
         cmd.linear.x, cmd.linear.y, cmd.angular.z = c.front, c.left, c.turn
@@ -318,6 +367,15 @@ class NavigationNode(Node):
             m.scale.z = 0.01
             arr.markers.append(m)
 
+        # 다른 로봇의 위험 범위 (연한 보라 원판)
+        mate = self.teammate_now()
+        if mate is not None:
+            m = self.make_marker('teammate', 0, Marker.CYLINDER, 0.6, 0.3, 0.9, 0.25)
+            m.pose.position.x, m.pose.position.y = float(mate[0]), float(mate[1])
+            m.scale.x = m.scale.y = 2.0 * self.planner.inflated_radius(self.teammate_radius)
+            m.scale.z = 0.01
+            arr.markers.append(m)
+
         # 당근 (노란 공)
         if carrot is not None:
             m = self.make_marker('carrot', 0, Marker.SPHERE, 1.0, 0.9, 0.0)
@@ -339,7 +397,7 @@ class NavigationNode(Node):
             s = self.last_status
             r = 0.3 if s == 'ARRIVED' else 1.0     # 이동 중 흰색, 도착 초록, 막힘 빨강
             g = 0.3 if s == 'BLOCKED' else 1.0
-            b = 1.0 if s in ('MOVING', 'IDLE') else 0.3
+            b = 1.0 if s in ('MOVING', 'IDLE', 'WAITING') else 0.3
             m = self.make_marker('status', 0, Marker.TEXT_VIEW_FACING, r, g, b)
             m.pose.position.x = float(self.robot[0])
             m.pose.position.y = float(self.robot[1]) + 0.45

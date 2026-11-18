@@ -16,7 +16,7 @@ Visualization Manager:
       Name: Navigation
       Enabled: true
       Topic:
-        Value: /nav_markers
+        Value: /robot1/nav_markers
         Depth: 5
         Durability Policy: Volatile
         Reliability Policy: Reliable
@@ -26,7 +26,7 @@ Visualization Manager:
       Name: Planned Path
       Enabled: true
       Topic:
-        Value: /nav_path
+        Value: /robot1/nav_path
         Depth: 5
         Durability Policy: Volatile
         Reliability Policy: Reliable
@@ -40,11 +40,35 @@ Visualization Manager:
       Name: Navigation Debug
       Enabled: true
       Topic:
-        Value: /nav_debug
+        Value: /robot1/nav_debug
         Depth: 5
         Durability Policy: Volatile
         Reliability Policy: Reliable
         History Policy: Keep Last
+      Value: true
+    - Class: rviz_default_plugins/MarkerArray
+      Name: Robot2
+      Enabled: true
+      Topic:
+        Value: /robot2/nav_markers
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Value: true
+    - Class: rviz_default_plugins/Path
+      Name: Robot2 Path
+      Enabled: true
+      Topic:
+        Value: /robot2/nav_path
+        Depth: 5
+        Durability Policy: Volatile
+        Reliability Policy: Reliable
+        History Policy: Keep Last
+      Color: 200; 80; 230
+      Line Style: Lines
+      Line Width: 0.03
+      Pose Style: None
       Value: true
   Enabled: true
   Global Options:
@@ -56,10 +80,10 @@ Visualization Manager:
     - Class: rviz_default_plugins/MoveCamera
     - Class: rviz_default_plugins/SetInitialPose
       Topic:
-        Value: /initialpose
+        Value: /robot1/initialpose
     - Class: rviz_default_plugins/SetGoal
       Topic:
-        Value: /goal_pose
+        Value: /robot1/goal_pose
     - Class: rviz_default_plugins/PublishPoint
       Single click: true
       Topic:

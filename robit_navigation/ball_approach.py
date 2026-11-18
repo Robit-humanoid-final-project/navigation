@@ -6,6 +6,8 @@
   2. 목표가 공 근처(킥 자리)면: 공 -> 목표 방향으로 더 떨어진 "진입점"까지 A-star로 가고,
      진입점에서 목표까지는 똑바로 들어간다 (= 항상 공 반대편에서 다가감)
   3. 로봇이 이미 진입로 위(공 뒤 일직선)에 있으면 물러나지 않고 바로 들어간다
+  4. 진입점이나 진입로가 꼬깔에 막히면, 진입점을 공 쪽으로 당겨서 다시 시도한다
+     (꼬깔 바로 옆에 공이 있어도 길을 찾게)
 
 킥 자리 예시: 공 (bx, by)를 +x 쪽으로 차려면 목표 = (bx - 0.3, by, 0도)
 """
@@ -43,19 +45,34 @@ def plan_path(planner, start, goal, cones, ball=None, ball_radius=0.075,
     if d_goal < planner.robot_radius + ball_radius:
         return None                               # 목표에 서면 몸이 공에 닿음: 갈 수 없음
 
+    def cone_free(points):
+        """점들이 모두 꼬깔 위험 범위 밖인지 (공은 빼고 검사)"""
+        return all(math.hypot(px - cx, py - cy) >= planner.inflated_radius(cr)
+                   for px, py in points for cx, cy, cr in cones)
+
+    if not cone_free([goal]):
+        return None                               # 킥 자리가 꼬깔 범위 안: 갈 수 없음
+
     # 목표가 공 근처(킥 자리): 공 -> 목표 방향(u)으로 진입로를 만든다
     ux, uy = gx / d_goal, gy / d_goal
-    pre = (ball[0] + ux * (R + approach_margin), ball[1] + uy * (R + approach_margin))
 
     # 이미 진입로 위에 있으면 (공 뒤 일직선, 목표보다 바깥쪽) 바로 목표로
     sx, sy = start[0] - ball[0], start[1] - ball[1]
     along = sx * ux + sy * uy                     # 진입로 방향으로 얼마나 나가 있나
     side = abs(sx * uy - sy * ux)                 # 진입로에서 옆으로 얼마나 벗어났나
     if along >= d_goal - 0.02 and side < corridor_width:
-        return [tuple(start)] + straight_line(start, goal, planner.res)
+        line = straight_line(start, goal, planner.res)
+        if cone_free(line):
+            return [tuple(start)] + line
 
     # 진입점까지는 A-star로 공·꼬깔을 돌아서, 진입점부터는 똑바로
-    head = planner.plan(start, pre)
-    if head is None:
-        return None
-    return head + straight_line(pre, goal, planner.res)
+    # 진입점이 꼬깔에 막히면 공 쪽으로 당겨서 다시 (예: 0.2 -> 0.1 -> 0.05m)
+    for m in (approach_margin, approach_margin / 2.0, min(0.05, approach_margin)):
+        pre = (ball[0] + ux * (R + m), ball[1] + uy * (R + m))
+        line = straight_line(pre, goal, planner.res)
+        if not cone_free([pre] + line):
+            continue
+        head = planner.plan(start, pre)
+        if head is not None:
+            return head + line
+    return None
