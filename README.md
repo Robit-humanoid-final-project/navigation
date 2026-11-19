@@ -6,7 +6,7 @@ Ubuntu 24.04 + ROS2 Jazzy 기준.
 
 ## 구성
 
-| 파일 | 내 담당? | 하는 일 |
+| 파일 | 내 담당 | 하는 일 |
 |---|---|---|
 | `robit_navigation/nav_core.py` | ✅ | 좌표 변환, PID 제어, 도착 판단, 당근(Carrot) 따라가기 |
 | `robit_navigation/astar.py` | ✅ | 꼬깔 부풀리기 + 격자 A-star 경로 계획 |
