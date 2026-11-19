@@ -13,7 +13,7 @@
   Ctrl + 왼쪽 클릭 후 끌기   = 로봇 옮기기
 
 로봇마다 (robot1, robot2):
-  받는 토픽:  /robotN/robot_pose, /robotN/nav_path, /robotN/nav_status, /robotN/nav_cmd,
+  받는 토픽:  /robotN/robot_pose, /robotN/nav_path, /robotN/nav_status, /robotN/nav_remain, /robotN/nav_cmd,
               /robotN/nav_markers (가짜 로봇 그림), /robotN/nav_debug (내비게이션 그림)
   보내는 토픽: /robotN/nav_goal (목표), /robotN/nav_cancel (목표 취소: Stop, Reset),
               /robotN/initialpose (로봇 옮기기)
@@ -30,7 +30,7 @@ from rclpy.parameter import Parameter, parameter_value_to_python
 from rclpy.parameter_client import AsyncParameterClient
 from geometry_msgs.msg import Point, PointStamped, Pose2D, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Path
-from std_msgs.msg import Empty, String
+from std_msgs.msg import Empty, Float32, String
 from visualization_msgs.msg import Marker, MarkerArray
 
 from python_qt_binding.QtCore import QPointF, QRectF, Qt, QTimer
@@ -106,7 +106,7 @@ class NavGuiNode(Node):
         self.starts = {n: (x, y, a) for n, x, y, a in
                        zip(self.names, p('starts_x'), p('starts_y'), p('starts_yaw_deg'))}
 
-        self.data = {n: {'robot': None, 'path': [], 'status': '-', 'cmd': (0.0, 0.0, 0.0)}
+        self.data = {n: {'robot': None, 'path': [], 'status': '-', 'cmd': (0.0, 0.0, 0.0), 'remain': -1.0}
                      for n in self.names}
         self.selected = self.names[0]   # 지금 조작하는 로봇
         self.ball = None           # (x, y)
@@ -120,6 +120,8 @@ class NavGuiNode(Node):
             self.create_subscription(Path, t + 'nav_path', lambda m, n=n: self.on_path(n, m), 10)
             self.create_subscription(String, t + 'nav_status', lambda m, n=n: self.on_status(n, m), 10)
             self.create_subscription(Twist, t + 'nav_cmd', lambda m, n=n: self.on_cmd(n, m), 10)
+            self.create_subscription(Float32, t + 'nav_remain',
+                                     lambda m, n=n: self.data[n].__setitem__('remain', m.data), 10)
             self.create_subscription(MarkerArray, t + 'nav_markers',
                                      lambda m, n=n: self.on_markers(n, 'fake', m), 10)
             self.create_subscription(MarkerArray, t + 'nav_debug',
@@ -505,6 +507,8 @@ class RobotView(QWidget):
         p.drawText(14, 56, f'앞 {front:+.2f} m/s   왼쪽 {left:+.2f} m/s   회전 {turn:+.2f} rad/s')
         if robot is not None:
             p.drawText(14, 76, f'로봇 ({robot[0]:+.2f}, {robot[1]:+.2f})  {math.degrees(robot[2]):+.0f}도')
+        remain = self.node.data[self.node.selected]['remain']
+        p.drawText(14, 96, f'남은 거리 {remain:.2f} m' if remain >= 0 else '남은 거리 -')
         p.setPen(QColor('#888888'))
         p.drawText(w - 170, 20, f'{self.node.selected} 기준 화면')
         p.end()

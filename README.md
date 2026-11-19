@@ -30,8 +30,9 @@ Ubuntu 24.04 + ROS2 Jazzy 기준.
 | `/nav_cancel` | std_msgs/Empty | 받음 | 목표 취소: 멈추고 IDLE (Taskplanner, UI의 Stop·Reset) |
 | `/teammate_pose` | geometry_msgs/Pose2D | 받음 | 우리 팀 다른 로봇 위치 x, y [m] (필드 기준, 실제로는 UDP) |
 | `/goal_pose` | geometry_msgs/PoseStamped | 받음 | RViz2 "2D Goal Pose"로 찍은 목표 (테스트용) |
-| `/nav_cmd` | geometry_msgs/Twist | 보냄 | linear.x 앞, linear.y 왼쪽 [m/s], angular.z 회전 [rad/s] (Taskplanner) |
+| `/nav_cmd` | geometry_msgs/Twist | 보냄 | linear.x 앞, linear.y 왼쪽 [m/s], angular.z 회전 [rad/s] (Walk, 단위 그대로 사용하기로 합의) |
 | `/nav_status` | std_msgs/String | 보냄 | IDLE / MOVING / ARRIVED / NO_POSE / BLOCKED / WAITING (Taskplanner) |
+| `/nav_remain` | std_msgs/Float32 | 보냄 | 목표까지 경로로 남은 거리 [m]. 가는 중 = 경로 길이, 도착 = 0, 목표·경로·위치 없음 = -1 (Taskplanner) |
 | `/nav_path` | nav_msgs/Path | 보냄 | A-star 경로 (RViz2 표시용) |
 | `/nav_debug` | visualization_msgs/MarkerArray | 보냄 | 목표, 기억한 꼬깔 범위, 당근, 상태 글자 (RViz2 표시용) |
 

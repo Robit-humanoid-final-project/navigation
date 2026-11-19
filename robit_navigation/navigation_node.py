@@ -19,6 +19,8 @@
 보내는 토픽 (임시 이름, 팀 합의 후 변경):
   /nav_cmd           geometry_msgs/Twist        linear.x 앞, linear.y 왼쪽 [m/s], angular.z 회전 [rad/s]
   /nav_status        std_msgs/String            IDLE / MOVING / ARRIVED / NO_POSE / BLOCKED / WAITING
+  /nav_remain        std_msgs/Float32           목표까지 경로로 남은 거리 [m]
+                     MOVING·WAITING: 남은 경로 길이 / ARRIVED: 0 / IDLE·NO_POSE·BLOCKED: -1 (모름)
   /nav_path          nav_msgs/Path              A-star 경로 (RViz2 표시용)
   /nav_debug         visualization_msgs/MarkerArray  목표, 기억한 꼬깔 범위, 당근, 상태 글자 (RViz2 표시용)
 
@@ -38,13 +40,13 @@ from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
 from geometry_msgs.msg import PointStamped, Pose2D, PoseArray, PoseStamped, Twist
 from nav_msgs.msg import Path
-from std_msgs.msg import Empty, String
+from std_msgs.msg import Empty, Float32, String
 from visualization_msgs.msg import Marker, MarkerArray
 
 from robit_navigation.astar import GridPlanner
 from robit_navigation.teammate import (SpeedEstimator, look_ahead_point, plan_with_teammate,
                                       should_yield, too_close)
-from robit_navigation.nav_core import ControllerParams, PathFollower, robot_to_field
+from robit_navigation.nav_core import ControllerParams, PathFollower, path_remaining, robot_to_field
 from robit_navigation.obstacle_memory import ObstacleMemory, ObstacleMemoryParams
 
 FRAME = 'map'
@@ -137,6 +139,7 @@ class NavigationNode(Node):
         # 보내기
         self.cmd_pub = self.create_publisher(Twist, 'nav_cmd', 10)
         self.status_pub = self.create_publisher(String, 'nav_status', 10)
+        self.remain_pub = self.create_publisher(Float32, 'nav_remain', 10)
         self.path_pub = self.create_publisher(Path, 'nav_path', 10)
         self.debug_pub = self.create_publisher(MarkerArray, 'nav_debug', 10)
         # 반복 (기본 0.1초마다)
@@ -317,6 +320,7 @@ class NavigationNode(Node):
             if (too_close(self.robot, toward, mate, self.stop_dist) or
                     (self.yield_to_teammate and
                      should_yield(self.robot, toward, mate, self.teammate_speed.speed, self.yield_dist))):
+                self.remain = path_remaining(self.path, self.robot)
                 self.publish(cmd, 'WAITING')
                 self.publish_debug(None)
                 return
@@ -330,6 +334,14 @@ class NavigationNode(Node):
     def publish(self, cmd, status):
         self.cmd_pub.publish(cmd)
         self.status_pub.publish(String(data=status))
+        # 남은 거리: 가는 중(기다리는 중 포함)이면 경로 길이, 도착이면 0, 목표·경로·위치가 없으면 -1
+        if status in ('MOVING', 'WAITING'):
+            remain = self.remain
+        elif status == 'ARRIVED':
+            remain = 0.0
+        else:
+            remain = -1.0
+        self.remain_pub.publish(Float32(data=float(remain)))
         if status != self.last_status:      # 상태가 바뀔 때만 화면에 출력
             self.get_logger().info(f'상태: {status}')
             self.last_status = status

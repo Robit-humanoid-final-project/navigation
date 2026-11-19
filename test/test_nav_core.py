@@ -1,7 +1,7 @@
 """계산 부분 확인: 손으로 푼 답, 좌표 변환, PID, 꼬깔 기억 (실행: python3 -m pytest test)"""
 import math
 
-from robit_navigation.nav_core import Pid, field_to_robot, normalize_angle, robot_to_field
+from robit_navigation.nav_core import Pid, field_to_robot, normalize_angle, path_remaining, robot_to_field
 from robit_navigation.obstacle_memory import ObstacleMemory
 
 R = math.radians
@@ -63,3 +63,10 @@ def test_obstacle_memory():
     mem2.update((0, 0, 0), [(0.0, 1.0)], 0.1)        # 오른쪽(+x)을 보면서 왼쪽 1m
     c = mem2.confirmed()
     assert len(c) == 1 and close(c[0][0], 0.0, 0.01) and close(c[0][1], 1.0, 0.01)   # 같은 꼬깔
+
+
+def test_path_remaining():
+    path = [(0.0, 0.0), (1.0, 0.0), (1.0, 1.0)]       # ㄱ자 경로, 전체 2m
+    assert close(path_remaining(path, (0.0, 0.0)), 2.0)
+    assert close(path_remaining(path, (1.0, 0.0)), 1.0)      # 모서리: 남은 1m
+    assert close(path_remaining(path, (1.0, 1.0)), 0.0)      # 끝

@@ -36,6 +36,16 @@ def clip(value, limit):
     return max(-limit, min(limit, value))
 
 
+def path_remaining(path, robot):
+    """경로로 남은 거리: 로봇 -> 가장 가까운 경로 점 -> 경로 끝까지 길이 (m)"""
+    rx, ry = robot[0], robot[1]
+    nearest = min(range(len(path)), key=lambda k: math.hypot(path[k][0] - rx, path[k][1] - ry))
+    remain = math.hypot(path[nearest][0] - rx, path[nearest][1] - ry)
+    for k in range(nearest, len(path) - 1):
+        remain += math.hypot(path[k + 1][0] - path[k][0], path[k + 1][1] - path[k][1])
+    return remain
+
+
 # ---------------- PID ----------------
 class Pid:
     """u = Kp*e + Ki*(오차를 쌓은 값) + Kd*(오차 변화 속도)"""
