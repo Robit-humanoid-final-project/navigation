@@ -46,12 +46,13 @@ def plan_path(planner, start, goal, cones, ball=None, ball_radius=0.075,
         return None                               # 목표에 서면 몸이 공에 닿음: 갈 수 없음
 
     def cone_free(points):
-        """점들이 모두 꼬깔 위험 범위 밖인지 (공은 빼고 검사)"""
+        """점들이 모두 꼬깔 위험 범위 밖이고, 필드 선 띠·금지선 밖인지 (공은 빼고 검사)"""
         return all(math.hypot(px - cx, py - cy) >= planner.inflated_radius(cr)
-                   for px, py in points for cx, cy, cr in cones)
+                   for px, py in points for cx, cy, cr in cones) and \
+            all(planner.zone_distance(px, py) >= 0.0 for px, py in points)
 
     if not cone_free([goal]):
-        return None                               # 킥 자리가 꼬깔 범위 안: 갈 수 없음
+        return None                               # 킥 자리가 꼬깔 범위 안이나 필드 선 근처: 갈 수 없음
 
     # 목표가 공 근처(킥 자리): 공 -> 목표 방향(u)으로 진입로를 만든다
     ux, uy = gx / d_goal, gy / d_goal

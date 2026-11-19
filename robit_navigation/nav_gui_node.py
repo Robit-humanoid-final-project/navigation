@@ -16,6 +16,7 @@
   받는 토픽:  /robotN/robot_pose, /robotN/nav_path, /robotN/nav_status, /robotN/nav_remain, /robotN/nav_cmd,
               /robotN/nav_markers (가짜 로봇 그림), /robotN/nav_debug (내비게이션 그림)
   보내는 토픽: /robotN/nav_goal (목표), /robotN/nav_cancel (목표 취소: Stop, Reset),
+              /robotN/nav_left_only (Ready 버튼: 두 로봇 모두 LEFT 진영만),
               /robotN/initialpose (로봇 옮기기)
 같이 쓰는 토픽: /ball_pose (받음), /clicked_point (공 옮기기, 보냄)
 튜닝 값은 ROS2 파라미터로 바꿈 (ros2 param set 과 같음)
@@ -30,7 +31,7 @@ from rclpy.parameter import Parameter, parameter_value_to_python
 from rclpy.parameter_client import AsyncParameterClient
 from geometry_msgs.msg import Point, PointStamped, Pose2D, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Path
-from std_msgs.msg import Empty, Float32, String
+from std_msgs.msg import Bool, Empty, Float32, String
 from visualization_msgs.msg import Marker, MarkerArray
 
 from python_qt_binding.QtCore import QPointF, QRectF, Qt, QTimer
@@ -64,6 +65,7 @@ PATH_PARAMS = [
     ('cone_radius', '꼬깔 반지름 m', 0, 1, 0.01, 2), ('ball_radius', '공 반지름 m', 0, 1, 0.01, 3),
     ('approach_margin', '진입점 여유 m', 0, 2, 0.05, 2), ('tol_dist', '허용 거리 m', 0, 1, 0.01, 2),
     ('tol_yaw_deg', '허용 각도 도', 0, 90, 1, 1), ('carrot_points', '당근 (점 개수)', 1, 30, 1, 0),
+    ('boundary_margin', '선 안쪽 여유 m', 0, 1, 0.05, 2), ('center_margin', '가운데선 여유 m', 0, 1, 0.05, 2),
 ]
 FAKE_PARAMS = [('slip', '미끄러짐 m/s', 0, 0.5, 0.01, 2)]
 
@@ -112,7 +114,7 @@ class NavGuiNode(Node):
         self.ball = None           # (x, y)
         self.markers = {}          # (로봇, 토픽, ns, id) -> Marker
         self.log = None            # 화면 기록 함수 (창에서 연결)
-        self.goal_pub, self.init_pub, self.cancel_pub, self.params = {}, {}, {}, {}
+        self.goal_pub, self.init_pub, self.cancel_pub, self.left_pub, self.params = {}, {}, {}, {}, {}
 
         for n in self.names:
             t = f'/{n}/' if n else '/'
@@ -129,6 +131,7 @@ class NavGuiNode(Node):
             self.goal_pub[n] = self.create_publisher(Pose2D, t + 'nav_goal', 10)
             self.init_pub[n] = self.create_publisher(PoseWithCovarianceStamped, t + 'initialpose', 10)
             self.cancel_pub[n] = self.create_publisher(Empty, t + 'nav_cancel', 10)
+            self.left_pub[n] = self.create_publisher(Bool, t + 'nav_left_only', 10)
             for kind in ('navigation_node', 'fake_robot_node'):
                 self.params[(n, kind)] = AsyncParameterClient(self, t + kind)
 
@@ -183,6 +186,12 @@ class NavGuiNode(Node):
     def send_goal(self, x, y, yaw):
         self.goal_pub[self.selected].publish(Pose2D(x=float(x), y=float(y), theta=float(yaw)))
         self.log(f'{self.selected} 목표 보냄: ({x:.2f}, {y:.2f}), {math.degrees(yaw):.0f}도')
+
+    def send_left_only(self, on):
+        """Ready: 두 로봇 모두 LEFT 진영만 다니게 (게임 상태라서 같이)"""
+        for pub in self.left_pub.values():
+            pub.publish(Bool(data=bool(on)))
+        self.log('Ready: LEFT 진영만 다님' if on else 'Playing: LEFT 진영 제한 해제')
 
     def send_cancel(self):
         self.cancel_pub[self.selected].publish(Empty())
@@ -588,6 +597,11 @@ class MainWindow(QMainWindow):
             b.clicked.connect(lambda _, n=n: self.select(n))
             self.pick_buttons[n] = b
             pick.addWidget(b)
+        pick.addSpacing(20)
+        self.ready_btn = QPushButton('Ready (LEFT만)')
+        self.ready_btn.setCheckable(True)
+        self.ready_btn.toggled.connect(self.on_ready)
+        pick.addWidget(self.ready_btn)
         pick.addStretch()
 
         g = QGridLayout()
@@ -658,8 +672,8 @@ class MainWindow(QMainWindow):
         if extra:
             g.addWidget(extra, 0, 0, 1, 2)
         apply_btn, read_btn = QPushButton('Apply'), QPushButton('Read')
-        g.addWidget(apply_btn, 0, 4)
-        g.addWidget(read_btn, 1, 4)
+        g.addWidget(apply_btn, 0, 6)
+        g.addWidget(read_btn, 1, 6)
 
         def apply():
             vals = {n: (int(b.value()) if isinstance(b, QSpinBox) else round(float(b.value()), 4))
@@ -708,6 +722,11 @@ class MainWindow(QMainWindow):
 
     def on_set_ball(self):
         self.node.send_ball(self.bx.value(), self.by.value())
+
+    def on_ready(self, on):
+        self.ready_btn.setStyleSheet('background: #c62828; border: 3px solid #ffe14d;' if on else '')
+        self.ready_btn.setText('Ready (LEFT만) 켜짐' if on else 'Ready (LEFT만)')
+        self.node.send_left_only(on)
 
     def on_reset(self):
         self.node.send_cancel()               # 예전 목표로 다시 출발하지 않게 먼저 취소

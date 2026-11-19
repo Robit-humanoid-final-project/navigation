@@ -6,6 +6,8 @@
 순서
   1. 필드를 격자(바둑판)로 나눈다
   2. 꼬깔을 '꼬깔 반지름 + 로봇 반지름 + 여유'만큼 부풀려서 그 안의 칸을 막는다
+     필드 선 안쪽 boundary_margin 띠도 막는다 (로봇 몸이 필드 밖으로 안 나가게, 나가면 30초 페널티)
+     max_x 를 정하면 그보다 오른쪽도 막는다 (Ready 때 RIGHT 진영에 들어가면 실패)
   3. A-star로 출발 칸 -> 목표 칸 최단 경로를 찾는다 (f = g + h)
   4. 칸 번호를 다시 필드 좌표 점 목록으로 바꿔서 돌려준다
 """
@@ -15,15 +17,18 @@ import math
 
 class GridPlanner:
     def __init__(self, x_min, x_max, y_min, y_max, resolution=0.1,
-                 robot_radius=0.2, margin=0.15):
+                 robot_radius=0.2, margin=0.15, boundary_margin=0.0):
         self.x_min, self.y_min = x_min, y_min
+        self.x_max, self.y_max = x_max, y_max
+        self.boundary_margin = boundary_margin      # 로봇 중심이 필드 선에서 떨어져야 하는 거리 (m)
+        self.max_x = None                           # 로봇 중심이 넘으면 안 되는 x (None = 제한 없음)
         self.res = resolution                       # 칸 한 변 길이 (m)
         self.nx = int(round((x_max - x_min) / resolution)) + 1
         self.ny = int(round((y_max - y_min) / resolution)) + 1
         self.robot_radius = robot_radius            # 로봇 몸통 반지름 (m)
         self.margin = margin                        # 추가 여유 (m)
         self.obstacles = []                         # [(x, y, 꼬깔 반지름), ...]
-        self.blocked = [[False] * self.ny for _ in range(self.nx)]
+        self.blocked = self.empty_map()
         self.last_expanded = 0                      # 마지막 탐색에서 확장한 칸 수 (확인용)
 
     # ---------------- 좌표 <-> 칸 번호 ----------------
@@ -43,10 +48,38 @@ class GridPlanner:
         """R = 꼬깔 반지름 + 로봇 반지름 + 여유"""
         return cone_radius + self.robot_radius + self.margin
 
+    # ---------------- 필드 테두리 ----------------
+    def edge_distance(self, x, y):
+        """필드 선까지 가장 가까운 거리 (선 밖이면 음수)"""
+        return min(x - self.x_min, self.x_max - x, y - self.y_min, self.y_max - y)
+
+    def zone_distance(self, x, y):
+        """막힌 테두리(필드 선 안쪽 띠, max_x 금지선)까지 거리 (음수 = 막힌 곳 안)"""
+        d = self.edge_distance(x, y) - self.boundary_margin if self.boundary_margin > 0.0 else float('inf')
+        if self.max_x is not None:
+            d = min(d, self.max_x - x)
+        return d
+
+    def set_max_x(self, max_x):
+        """오른쪽 금지선 정하기 (None = 없앰). 지도를 다시 만든다"""
+        if max_x != self.max_x:
+            self.max_x = max_x
+            self.set_obstacles(self.obstacles)
+
+    def empty_map(self):
+        """꼬깔 없는 지도: 필드 선 안쪽 띠와 금지선 오른쪽만 막힘"""
+        blocked = [[False] * self.ny for _ in range(self.nx)]
+        if self.boundary_margin > 0.0 or self.max_x is not None:
+            for i in range(self.nx):
+                for j in range(self.ny):
+                    if self.zone_distance(*self.to_point(i, j)) < 0.0:
+                        blocked[i][j] = True
+        return blocked
+
     def set_obstacles(self, obstacles):
         """obstacles: [(x, y, 꼬깔 반지름), ...]  필드 기준"""
         self.obstacles = list(obstacles)
-        self.blocked = [[False] * self.ny for _ in range(self.nx)]
+        self.blocked = self.empty_map()
         for ox, oy, r in self.obstacles:
             R = self.inflated_radius(r)
             ci, cj = self.to_cell(ox, oy)
@@ -61,11 +94,13 @@ class GridPlanner:
 
     def clearance(self, x, y):
         """가장 가까운 위험 범위 테두리까지 거리 (음수 = 범위 안, 작을수록 깊이 들어감)"""
-        return min((math.hypot(x - ox, y - oy) - self.inflated_radius(r)
-                    for ox, oy, r in self.obstacles), default=float('inf'))
+        return min([math.hypot(x - ox, y - oy) - self.inflated_radius(r)
+                    for ox, oy, r in self.obstacles] + [self.zone_distance(x, y)])
 
     def is_free_point(self, x, y):
-        """점 하나가 안전한지 (부풀린 원 밖인지)"""
+        """점 하나가 안전한지 (부풀린 원 밖이고, 필드 선 안쪽 여유 띠 밖인지)"""
+        if self.zone_distance(x, y) < 0.0:
+            return False
         return all(math.hypot(x - ox, y - oy) >= self.inflated_radius(r)
                    for ox, oy, r in self.obstacles)
 

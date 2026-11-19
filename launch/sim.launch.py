@@ -51,6 +51,8 @@ NAV_PARAMS = {
     'grid_resolution': 0.1,
     'robot_radius': ROBOT_RADIUS,
     'margin': 0.15,
+    'center_margin': 0.2,      # Ready(LEFT 진영만) 때 로봇 중심이 가운데선에서 떨어져야 하는 거리 (m)
+    'boundary_margin': 0.2,    # 로봇 중심이 필드 선에서 떨어져야 하는 거리 (m), 필드 밖 = 30초 페널티
     'cone_radius': CONE_RADIUS,
     'carrot_points': 5,
     'replan_period': 1.0,

@@ -28,6 +28,7 @@ Ubuntu 24.04 + ROS2 Jazzy 기준.
 | `/vision_obstacles` | geometry_msgs/PoseArray | 받음 | 카메라에 보이는 꼬깔, frame_id `base_footprint`: x 앞, y 왼쪽 [m] (Vision `vision_packages`의 obstacle[] 대신) |
 | `/ball_pose` | geometry_msgs/PointStamped | 받음 | 공 위치, frame_id `map`이면 필드 기준, 그 밖은 로봇 기준 (x 앞, y 왼쪽) [m] |
 | `/nav_cancel` | std_msgs/Empty | 받음 | 목표 취소: 멈추고 IDLE (Taskplanner, UI의 Stop·Reset) |
+| `/nav_left_only` | std_msgs/Bool | 받음 | true: LEFT 진영만 다님 (Ready), false: 제한 없음 (Playing) (Taskplanner) |
 | `/teammate_pose` | geometry_msgs/Pose2D | 받음 | 우리 팀 다른 로봇 위치 x, y [m] (필드 기준, 실제로는 UDP) |
 | `/goal_pose` | geometry_msgs/PoseStamped | 받음 | RViz2 "2D Goal Pose"로 찍은 목표 (테스트용) |
 | `/nav_cmd` | geometry_msgs/Twist | 보냄 | linear.x 앞, linear.y 왼쪽 [m/s], angular.z 회전 [rad/s] (Walk, 단위 그대로 사용하기로 합의) |
@@ -98,6 +99,29 @@ Vision은 지금 카메라에 보이는 꼬깔만 로봇 기준으로 알려줌.
 3. 두 번 이상 본 꼬깔만 인정 (`min_hits`, 한 번 잘못 본 것 무시)
 4. 카메라에 보여야 할 곳인데 `forget_time`초 동안 안 보이면 지움
 
+## 필드 밖으로 안 나가기
+
+필드 밖으로 나가면 30초 페널티. 그래서 필드 선 안쪽 `boundary_margin`(기본 0.2m) 띠를 A-star 지도에서 막음.
+
+- 로봇 반지름 0.15m → 몸이 선 밖으로 안 나가고 5cm 여유
+- 목표가 선 근처(띠 안)나 필드 밖이면 `BLOCKED`
+- 시작 위치가 선 위여도 안쪽으로 빠져나와서 감
+- UI의 주황 안쪽 테두리 = 로봇 중심이 다닐 수 있는 범위
+- 가짜 로봇: 로봇 중심이 선 밖으로 나가면 "필드 밖으로 나감!" 경고
+
+## Ready 때 RIGHT 진영 금지
+
+규정: Ready 이동 중 RIGHT 진영에 들어가면 실패. 그래서 Taskplanner가 `nav_left_only`를 true로 보내면
+
+- 로봇 중심이 가운데선에서 `center_margin`(기본 0.2m) 왼쪽까지만 다님 (몸 반지름 0.15m → 5cm 여유)
+- RIGHT 진영 목표는 `BLOCKED`, 이미 RIGHT 진영에 있으면 왼쪽으로 빠져나옴
+- Playing이 되면 false로 보내서 제한을 풂
+- UI: **Ready (LEFT만)** 버튼 (두 로봇 같이 적용), 켜지면 다닐 수 있는 범위가 빨간 테두리
+
+```bash
+ros2 topic pub --once /robot1/nav_left_only std_msgs/msg/Bool "{data: true}"
+```
+
 ## 로봇 2대 서로 피하기
 
 1. 다른 로봇을 **움직이는 꼬깔**로 보고 A-star가 돌아감 (다른 로봇이 15cm 넘게 움직이면 바로 다시 계획)
@@ -155,7 +179,7 @@ ros2 param set /robot1/navigation_node tol_yaw_deg 3.0
 ros2 param list /robot1/navigation_node
 ```
 
-- 실행 중 변경 가능: kp/ki/kd_move, i_limit_move, kp/ki/kd_turn, i_limit_turn, d_alpha, max_move, max_turn, tol_dist, tol_yaw_deg, carrot_points, robot_radius, margin, cone_radius, replan_period, avoid_ball, ball_radius, approach_margin, teammate_radius, yield_to_teammate, yield_dist, stop_dist
+- 실행 중 변경 가능: kp/ki/kd_move, i_limit_move, kp/ki/kd_turn, i_limit_turn, d_alpha, max_move, max_turn, tol_dist, tol_yaw_deg, carrot_points, robot_radius, margin, cone_radius, replan_period, avoid_ball, ball_radius, approach_margin, teammate_radius, yield_to_teammate, yield_dist, stop_dist, boundary_margin, center_margin
 - 시작할 때만: rate, field_length, field_width, grid_resolution, view_angle_deg, view_range, merge_dist, min_hits, forget_time
 - 잘못된 값(음수 등)은 거부됨. 껐다 켜면 launch 파일 값으로 돌아감
 

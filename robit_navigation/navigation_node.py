@@ -5,6 +5,8 @@
   /robot_pose        geometry_msgs/Pose2D       내 위치 x, y [m], theta(yaw) [rad]   <- Localization 대신
   /nav_goal          geometry_msgs/Pose2D       목표 x, y [m], theta [rad]          <- Taskplanner 대신
   /nav_cancel        std_msgs/Empty             목표 취소: 멈추고 IDLE (Taskplanner, UI의 Stop·Reset)
+  /nav_left_only     std_msgs/Bool              true: LEFT 진영만 다님 (Ready 때, RIGHT 진영 들어가면 실패)
+                     로봇 중심이 가운데선에서 center_margin 만큼 왼쪽까지만 감 / false: 제한 없음 (Playing)
   /goal_pose         geometry_msgs/PoseStamped  RViz2 "2D Goal Pose" 버튼으로 찍은 목표 (테스트용)
   /ball_pose         geometry_msgs/PointStamped 공 위치 <- Vision/Localization 대신
                      header.frame_id = "map": 필드 기준 / 그 밖: 로봇 기준 (x 앞, y 왼쪽)
@@ -38,9 +40,9 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
-from geometry_msgs.msg import PointStamped, Pose2D, PoseArray, PoseStamped, Twist
+from geometry_msgs.msg import Point, PointStamped, Pose2D, PoseArray, PoseStamped, Twist
 from nav_msgs.msg import Path
-from std_msgs.msg import Empty, Float32, String
+from std_msgs.msg import Bool, Empty, Float32, String
 from visualization_msgs.msg import Marker, MarkerArray
 
 from robit_navigation.astar import GridPlanner
@@ -66,6 +68,8 @@ TUNABLE = {
     'carrot_points': 5,        # 당근: 몇 개 앞 점
     'robot_radius': 0.15,      # 로봇 25 x 17cm를 덮는 원 반지름 (m)
     'margin': 0.15,            # 추가 여유 (m)
+    'center_margin': 0.2,      # LEFT 진영만 다닐 때 로봇 중심이 가운데선에서 떨어져야 하는 거리 (m)
+    'boundary_margin': 0.2,    # 로봇 중심이 필드 선에서 떨어져야 하는 거리 (m), 필드 밖 = 30초 페널티
     'cone_radius': 0.1,        # 꼬깔 14 x 14cm를 덮는 원 반지름 (m)
     'replan_period': 1.0,      # 몇 초마다 다시 계획
     # 공 피하기
@@ -111,6 +115,7 @@ class NavigationNode(Node):
         self.robot = None          # 아직 위치를 못 받았으면 None
         self.goal = None           # 아직 목표를 못 받았으면 None
         self.obstacles = []        # 계획에 쓰는 꼬깔 [(x, y, 반지름), ...] (필드 기준)
+        self.left_only = False     # True: LEFT 진영만 다님 (Ready)
         self.ball = None           # 공 위치 (x, y) (필드 기준), 모르면 None
         self.teammate = None       # 다른 로봇 위치 (x, y) (필드 기준), 모르면 None
         self.teammate_time = None  # 다른 로봇 위치를 마지막으로 받은 시간
@@ -132,6 +137,7 @@ class NavigationNode(Node):
         self.create_subscription(Pose2D, 'robot_pose', self.on_pose, 10)
         self.create_subscription(Pose2D, 'nav_goal', self.on_goal, 10)
         self.create_subscription(Empty, 'nav_cancel', self.on_cancel, 10)
+        self.create_subscription(Bool, 'nav_left_only', self.on_left_only, 10)
         self.create_subscription(PoseStamped, 'goal_pose', self.on_click_goal, 10)
         self.create_subscription(PoseArray, 'vision_obstacles', self.on_obstacles, 10)
         self.create_subscription(PointStamped, 'ball_pose', self.on_ball, 10)
@@ -191,7 +197,9 @@ class NavigationNode(Node):
         self.follower = PathFollower(cp, int(self.get_parameter('carrot_points').value))
         hl, hw = self.field_l / 2.0, self.field_w / 2.0
         self.planner = GridPlanner(-hl, hl, -hw, hw, resolution=self.res,
-                                   robot_radius=p('robot_radius'), margin=p('margin'))
+                                   robot_radius=p('robot_radius'), margin=p('margin'),
+                                   boundary_margin=p('boundary_margin'))
+        self.planner.set_max_x(-p('center_margin') if getattr(self, 'left_only', False) else None)
 
     # ---------------- 받기 ----------------
     def on_pose(self, msg):
@@ -202,6 +210,16 @@ class NavigationNode(Node):
         q = msg.pose.orientation
         yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         self.on_goal(Pose2D(x=msg.pose.position.x, y=msg.pose.position.y, theta=yaw))
+
+    def on_left_only(self, msg):
+        """Ready(LEFT 진영만) 켜기/끄기: 가운데선 금지선을 지도에 넣거나 뺀다"""
+        if msg.data == getattr(self, 'left_only', False):
+            return
+        self.left_only = msg.data
+        margin = float(self.get_parameter('center_margin').value)
+        self.planner.set_max_x(-margin if msg.data else None)
+        self.need_replan = True
+        self.get_logger().info('LEFT 진영만 다님 (Ready)' if msg.data else 'LEFT 진영 제한 해제 (Playing)')
 
     def on_cancel(self, _msg):
         """목표 취소: 목표와 경로를 지우고 멈춤 (다음 반복에서 IDLE, 정지 명령)"""
@@ -279,7 +297,7 @@ class NavigationNode(Node):
         if self.path is None:
             # 같은 경고가 계속 쌓이지 않게 5초에 한 번만 출력
             self.get_logger().warn(
-                '경로를 찾지 못함 (목표가 꼬깔·공·다른 로봇 범위 안이거나 길이 막힘)', throttle_duration_sec=5.0)
+                '경로를 찾지 못함 (목표가 꼬깔·공·다른 로봇 범위 안, 필드 선 근처이거나 길이 막힘)', throttle_duration_sec=5.0)
         self.publish_path()
 
     def time_to_replan(self):
@@ -381,6 +399,19 @@ class NavigationNode(Node):
             m.pose.position.x, m.pose.position.y = float(ox), float(oy)
             m.scale.x = m.scale.y = 2.0 * self.planner.inflated_radius(r)
             m.scale.z = 0.01
+            arr.markers.append(m)
+
+        # 로봇 중심이 다닐 수 있는 범위 (필드 선 안쪽 boundary_margin, 주황 점선 대신 얇은 선)
+        #   LEFT 진영만 다닐 때는 오른쪽 끝이 가운데선 왼쪽 금지선 (빨간색)
+        b = self.planner.boundary_margin
+        if b > 0.0 or self.planner.max_x is not None:
+            hl, hw = self.field_l / 2.0 - b, self.field_w / 2.0 - b
+            right = hl if self.planner.max_x is None else min(hl, self.planner.max_x)
+            red = self.planner.max_x is not None
+            m = self.make_marker('boundary', 0, Marker.LINE_STRIP, 1.0, 0.2 if red else 0.6, 0.1, 0.8)
+            m.scale.x = 0.03 if red else 0.02
+            m.points = [Point(x=x, y=y) for x, y in
+                        [(-hl, -hw), (right, -hw), (right, hw), (-hl, hw), (-hl, -hw)]]
             arr.markers.append(m)
 
         # 공의 위험 범위 (연한 하얀 원판) = 로봇 중심이 들어가면 공을 밀게 되는 곳

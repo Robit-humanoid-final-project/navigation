@@ -73,6 +73,7 @@ class FakeRobotNode(Node):
         self.has_ball = p('has_ball')
         self.teammate = None       # 다른 로봇 위치 (x, y)
         self.bumping = False
+        self.outside = False
         self.pushing = False
 
         self.cmd = Twist()
@@ -135,6 +136,12 @@ class FakeRobotNode(Node):
         if touching and not self.touching:
             self.get_logger().warn('꼬깔에 닿음!')
         self.touching = touching
+
+        # 필드 밖으로 나갔는지 검사 (로봇 중심이 선 밖 = 몸 절반 이상 나감, 규칙: 30초 페널티)
+        out = abs(self.x) > self.field_l / 2.0 or abs(self.y) > self.field_w / 2.0
+        if out and not self.outside:
+            self.get_logger().warn('필드 밖으로 나감!')
+        self.outside = out
 
         # 다른 로봇과 부딪혔는지 검사
         bumping = (self.teammate is not None and
