@@ -95,8 +95,8 @@ TUNABLE = {
     'yield_dist': 0.9,         # 이 거리 안에서 양보 (m)
     'stop_dist': 0.45,         # 다른 로봇이 바로 앞 이 거리 안이면 안전 정지 (m)
     # 보행(master2ik)으로 보낼 최대값 (임시 값, 보행 담당 답 오면 바꾸기). 음수로 넣으면 방향 반대
-    'ik_max_x': 40.0,          # 앞 속도가 max_move 일 때 x_length
-    'ik_max_y': 20.0,          # 옆 속도가 max_side_near 일 때 y_length
+    'ik_max_x': 25.0,          # 앞 속도가 max_move 일 때 x_length
+    'ik_max_y': 25.0,          # 옆 속도가 max_side_near 일 때 y_length
     'ik_max_yaw': 10.0,        # 회전 속도가 max_turn 일 때 yaw
 }
 # 시작할 때만 읽는 값
