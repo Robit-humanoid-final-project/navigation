@@ -32,6 +32,10 @@ def test_start_on_line_can_escape():
     path = make_planner().plan((-3.0, -3.0), (-1.5, 0.0))
     assert path is not None
     assert path[1][1] > -3.0                              # 첫 걸음은 안쪽으로
+    # 세팅 위치는 "라인보다 뒤"(필드 밖)에 둠: 그래도 안쪽으로 들어와서 감
+    for y in (-3.1, -3.25, 3.2):
+        path = make_planner().plan((-2.25, y), (-0.8, 0.0))
+        assert path is not None and abs(path[1][1]) < abs(y)
 
 
 def test_robot_body_never_leaves_field():

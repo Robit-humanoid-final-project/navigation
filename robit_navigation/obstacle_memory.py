@@ -1,7 +1,8 @@
 """
 꼬깔 기억하기 (ROS2와 상관없는 순수 계산)
 
-Vision은 지금 카메라에 보이는 꼬깔만 "로봇 기준(앞, 왼쪽)"으로 알려준다.
+Localization(world_model)은 지금 카메라에 보이는 꼬깔만 필드 기준으로 알려준다.
+(Vision을 직접 받으면 로봇 기준(앞, 왼쪽)으로 옴)
 그대로 쓰면 로봇이 고개를 돌리거나 꼬깔을 지나치는 순간 꼬깔이 사라져서
 A-star가 그쪽으로 길을 낼 수 있다. 그래서:
   1. 받은 꼬깔을 필드 기준으로 바꿔서 기억한다 (꼬깔은 경기 중 움직이지 않음)
@@ -45,18 +46,24 @@ class ObstacleMemory:
 
     def update(self, robot, seen, now):
         """
+        로봇 기준으로 받은 경우 (Vision 직접)
         robot: 지금 내 위치 (x, y, yaw), seen: 이번에 보인 꼬깔 [(앞, 왼쪽), ...] (로봇 기준)
         now: 지금 시간 (s)
+        반환: 진짜로 인정된 꼬깔 목록이 바뀌었으면 True (경로를 다시 짜야 함)
+        """
+        return self.update_field(robot, [robot_to_field(robot, f, l) for f, l in seen], now)
+
+    def update_field(self, robot, seen, now):
+        """
+        필드 기준으로 받은 경우 (Localization world_model)
+        robot: 지금 내 위치 (x, y, yaw), seen: 이번에 보인 꼬깔 [(x, y), ...] (필드 기준)
         반환: 진짜로 인정된 꼬깔 목록이 바뀌었으면 True (경로를 다시 짜야 함)
         """
         before = self.confirmed()
         updated = set()
 
-        for front, left in seen:
-            # 1. 로봇 기준 -> 필드 기준
-            fx, fy = robot_to_field(robot, front, left)
-
-            # 2. 기억 중인 꼬깔 중 가장 가까운 것 찾기
+        for fx, fy in seen:
+            # 1. 기억 중인 꼬깔 중 가장 가까운 것 찾기
             best, best_d = None, self.p.merge_dist
             for k, t in enumerate(self.tracks):
                 d = math.hypot(t['x'] - fx, t['y'] - fy)
@@ -76,7 +83,7 @@ class ObstacleMemory:
                 self.tracks.append({'x': fx, 'y': fy, 'hits': 1, 'last_seen': now})
                 updated.add(len(self.tracks) - 1)
 
-        # 3. 카메라에 보여야 할 곳인데 한동안 안 보인 꼬깔은 지우기
+        # 2. 카메라에 보여야 할 곳인데 한동안 안 보인 꼬깔은 지우기
         self.tracks = [
             t for k, t in enumerate(self.tracks)
             if k in updated
@@ -84,7 +91,7 @@ class ObstacleMemory:
             or now - t['last_seen'] <= self.p.forget_time
         ]
 
-        # 4. 진짜 꼬깔 목록이 바뀌었는지 (개수가 달라졌거나 10cm 넘게 움직였으면)
+        # 3. 진짜 꼬깔 목록이 바뀌었는지 (개수가 달라졌거나 10cm 넘게 움직였으면)
         after = self.confirmed()
         if len(before) != len(after):
             return True

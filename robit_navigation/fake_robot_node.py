@@ -1,18 +1,18 @@
 """
 가짜 로봇 노드 (연습용, 내 담당 아님)
-- 실제로는 Walking(걷기) + Localization(위치 추정) + Vision(꼬깔 찾기)이 하는 일을 흉내만 낸다.
-- /nav_cmd 를 받아서 그만큼 움직였다고 치고, /robot_pose 로 새 위치를 보낸다.
-- 가짜 Vision: 카메라 시야(앞쪽 부채꼴) 안의 꼬깔만, 로봇 기준(앞, 왼쪽)으로, 약간의 오차를 섞어서 보낸다.
+- 실제로는 Walking(걷기) + Localization(위치 추정) + Vision(꼬깔·공 찾기)이 하는 일을 흉내만 낸다.
+- nav_cmd 를 받아서 그만큼 움직였다고 치고, 새 위치를 보낸다.
+- 가짜 Localization: world_model (WorldModel, 팀 메시지)로 내 위치, 공, 지금 카메라에 보이는 꼬깔을
+  모두 필드 기준으로 보낸다. 꼬깔에는 약간의 오차를 섞는다. 공은 카메라에 보일 때만 ball_detected = true.
 - 꼬깔에 닿으면 경고를 띄운다.
-- 공: 로봇이 닿으면 공이 밀려나고 경고를 띄운다. RViz2 "Publish Point" 버튼으로 공을 옮길 수 있다.
-- RViz2 "2D Pose Estimate" 버튼으로 찍은 곳으로 로봇을 옮긴다 (Reset 역할).
-- slip 파라미터로 걸을 때 뒤로 미끄러지는 외란을 흉내 낼 수 있다 (PID 실험용).
-- RViz2 화면에 필드, 로봇, 지나온 길, 꼬깔, 카메라 시야를 그린다.
+- 공: 로봇이 닿으면 공이 밀려나고 경고를 띄운다. UI에서 공을 옮길 수 있다.
+- UI에서 찍은 곳으로 로봇을 옮긴다 (Reset, 세팅 위치).
+- UI 화면에 그릴 필드, 로봇, 지나온 길, 꼬깔, 카메라 시야를 보낸다.
 
-받는 토픽:  /nav_cmd (Twist), /initialpose (PoseWithCovarianceStamped, RViz2 버튼),
-            /clicked_point (PointStamped, RViz2 "Publish Point" 버튼 -> 공 옮기기)
-보내는 토픽: /robot_pose (Pose2D), /vision_obstacles (PoseArray, 로봇 기준),
-            /ball_pose (PointStamped, 필드 기준), /nav_markers (MarkerArray)
+받는 토픽:  nav_cmd (Twist), initialpose (PoseWithCovarianceStamped, 로봇 옮기기),
+            clicked_point (PointStamped, 공 옮기기), ball_pose (공을 안 가진 로봇이 공 위치 받기)
+보내는 토픽: world_model (WorldModel, 가짜 Localization), robot_pose (Pose2D, 다른 로봇·UI용),
+            ball_pose (PointStamped, 공을 가진 로봇만), nav_markers (MarkerArray, 화면)
 로봇 2대일 때: 공은 has_ball = True 인 가짜 로봇 하나만 가지고 있고, 두 로봇 모두 공을 밀 수 있다.
             /teammate_pose (Pose2D) 로 다른 로봇 위치를 받아서 부딪히면 경고한다.
 """
@@ -22,12 +22,11 @@ import random
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from geometry_msgs.msg import (Point, PointStamped, Pose, Pose2D, PoseArray,
-                               PoseWithCovarianceStamped, Twist)
+from geometry_msgs.msg import Point, PointStamped, Pose2D, PoseWithCovarianceStamped, Twist
+from humanoid_interfaces.msg import WorldModel
 from visualization_msgs.msg import Marker, MarkerArray
 
-FRAME = 'map'               # 필드 좌표계 이름 (RViz2의 Fixed Frame과 같아야 함)
-ROBOT_FRAME = 'base_footprint'   # 로봇 기준 좌표계 이름 (Vision 토픽 문서와 같게)
+FRAME = 'map'               # 필드 좌표계 이름
 
 
 class FakeRobotNode(Node):
@@ -54,10 +53,7 @@ class FakeRobotNode(Node):
         self.declare_parameter('view_angle_deg', 60.0)   # 카메라 시야 전체 각도
         self.declare_parameter('view_range', 3.0)        # 꼬깔을 볼 수 있는 거리 (m)
         self.declare_parameter('vision_noise', 0.03)     # 위치 오차 (m)
-        self.declare_parameter('vision_rate', 10.0)      # 1초에 몇 번 보낼지
-        # 미끄러짐(외란): 걷는 동안 로봇이 뒤로 밀리는 속도 (m/s). 0이면 미끄러짐 없음
-        # 실행 중에도 변경 가능: ros2 param set /fake_robot_node slip 0.1
-        self.declare_parameter('slip', 0.0)
+        self.declare_parameter('vision_rate', 10.0)      # world_model 을 1초에 몇 번 보낼지
 
         p = lambda name: self.get_parameter(name).value
         self.x, self.y = p('start_x'), p('start_y')
@@ -73,7 +69,7 @@ class FakeRobotNode(Node):
         self.has_ball = p('has_ball')
         self.teammate = None       # 다른 로봇 위치 (x, y)
         self.bumping = False
-        self.outside = False
+        self.outside = self.is_out()     # 세팅 위치는 라인보다 뒤(필드 밖)라서, 놓인 자리에서는 경고 안 함
         self.pushing = False
 
         self.cmd = Twist()
@@ -86,11 +82,13 @@ class FakeRobotNode(Node):
         if self.has_ball:
             self.create_subscription(PointStamped, 'clicked_point', self.on_clicked_point, 10)
             self.ball_pub = self.create_publisher(PointStamped, 'ball_pose', 10)
+        else:
+            self.create_subscription(PointStamped, 'ball_pose', self.on_ball, 10)   # 공 가진 로봇이 보낸 위치
         self.pose_pub = self.create_publisher(Pose2D, 'robot_pose', 10)
-        self.vision_pub = self.create_publisher(PoseArray, 'vision_obstacles', 10)
+        self.world_pub = self.create_publisher(WorldModel, 'world_model', 10)
         self.marker_pub = self.create_publisher(MarkerArray, 'nav_markers', 10)
         self.create_timer(self.dt, self.loop)
-        self.create_timer(1.0 / p('vision_rate'), self.publish_vision)
+        self.create_timer(1.0 / p('vision_rate'), self.publish_world)
 
         self.get_logger().info(
             f'가짜 로봇 시작: ({self.x:.1f}, {self.y:.1f}), {p("start_yaw_deg"):.0f}도')
@@ -98,28 +96,33 @@ class FakeRobotNode(Node):
     def on_cmd(self, msg):
         self.cmd = msg
 
+    def is_out(self):
+        return abs(self.x) > self.field_l / 2.0 or abs(self.y) > self.field_w / 2.0
+
     def on_initialpose(self, msg):
-        """RViz2 "2D Pose Estimate": 찍은 위치·방향으로 로봇을 옮기고 지나온 길을 지운다"""
+        """UI에서 찍은 위치·방향으로 로봇을 옮기고 지나온 길을 지운다"""
         q = msg.pose.pose.orientation
         self.x, self.y = msg.pose.pose.position.x, msg.pose.pose.position.y
         self.yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
         self.cmd = Twist()
         self.trail = []
+        self.outside = self.is_out()     # 사람이 놓은 자리(세팅 위치 등)는 경고 안 함
         self.get_logger().info(
             f'로봇 위치 옮김: ({self.x:.2f}, {self.y:.2f}), {math.degrees(self.yaw):.0f}도')
+
+    def on_ball(self, msg):
+        self.ball = [msg.point.x, msg.point.y]
 
     def on_teammate(self, msg):
         self.teammate = (msg.x, msg.y)
 
     def on_clicked_point(self, msg):
-        """RViz2 "Publish Point": 찍은 곳으로 공을 옮긴다"""
+        """UI에서 찍은 곳으로 공을 옮긴다"""
         self.ball = [msg.point.x, msg.point.y]
         self.get_logger().info(f'공 위치 옮김: ({self.ball[0]:.2f}, {self.ball[1]:.2f})')
 
     def loop(self):
-        # 걷는 중이면 미끄러짐만큼 앞으로 덜 감 (외란)
-        walking = abs(self.cmd.linear.x) + abs(self.cmd.linear.y) > 1e-6
-        vx = self.cmd.linear.x - (self.get_parameter('slip').value if walking else 0.0)
+        vx = self.cmd.linear.x
 
         # 로봇 기준 속도 명령을 필드 기준 이동으로 바꿔서 위치를 더한다 (좌표 변환의 반대 방향)
         c, s = math.cos(self.yaw), math.sin(self.yaw)
@@ -138,7 +141,7 @@ class FakeRobotNode(Node):
         self.touching = touching
 
         # 필드 밖으로 나갔는지 검사 (로봇 중심이 선 밖 = 몸 절반 이상 나감, 규칙: 30초 페널티)
-        out = abs(self.x) > self.field_l / 2.0 or abs(self.y) > self.field_w / 2.0
+        out = self.is_out()
         if out and not self.outside:
             self.get_logger().warn('필드 밖으로 나감!')
         self.outside = out
@@ -182,25 +185,27 @@ class FakeRobotNode(Node):
         ball.point.x, ball.point.y = float(self.ball[0]), float(self.ball[1])
         self.ball_pub.publish(ball)
 
-    def publish_vision(self):
-        """가짜 Vision: 시야 안 꼬깔만 로봇 기준(앞, 왼쪽)으로 + 오차"""
-        msg = PoseArray()
-        msg.header.frame_id = ROBOT_FRAME
-        msg.header.stamp = self.get_clock().now().to_msg()
-        noise = self.get_parameter('vision_noise').value
+    def in_view(self, px, py):
+        """이 점(필드 기준)이 카메라 시야(앞쪽 부채꼴) 안인지"""
         c, s = math.cos(self.yaw), math.sin(self.yaw)
-        for cx, cy in self.cones:
-            dx, dy = cx - self.x, cy - self.y
-            front, left = c * dx + s * dy, -s * dx + c * dy
-            if math.hypot(front, left) < self.view_range and abs(math.atan2(left, front)) < self.view_half:
-                ps = Pose()
-                ps.position.x = front + random.uniform(-noise, noise)
-                ps.position.y = left + random.uniform(-noise, noise)
-                ps.orientation.w = 1.0
-                msg.poses.append(ps)
-        self.vision_pub.publish(msg)
+        dx, dy = px - self.x, py - self.y
+        front, left = c * dx + s * dy, -s * dx + c * dy
+        return math.hypot(front, left) < self.view_range and abs(math.atan2(left, front)) < self.view_half
 
-    # ---------------- RViz2 화면 그리기 ----------------
+    def publish_world(self):
+        """가짜 Localization: WorldModel (내 위치, 공, 지금 보이는 꼬깔 + 오차, 모두 필드 기준)"""
+        msg = WorldModel()
+        msg.robot_pose = Pose2D(x=self.x, y=self.y, theta=self.yaw)
+        msg.is_localized = True
+        if self.ball is not None:
+            msg.ball_detected = self.in_view(*self.ball)
+            msg.ball_pose = Point(x=float(self.ball[0]), y=float(self.ball[1]))
+        noise = self.get_parameter('vision_noise').value
+        msg.obstacles = [Point(x=cx + random.uniform(-noise, noise), y=cy + random.uniform(-noise, noise))
+                         for cx, cy in self.cones if self.in_view(cx, cy)]
+        self.world_pub.publish(msg)
+
+    # ---------------- 화면 그림 (UI) ----------------
     def make_marker(self, mid, mtype, r, g, b, a=1.0):
         m = Marker()
         m.header.frame_id = FRAME
@@ -258,12 +263,6 @@ class FakeRobotNode(Node):
             m.scale.x = m.scale.y = 2.0 * self.cone_r
             m.scale.z = 0.3
             arr.markers.append(m)
-
-        # 5: 필드 바닥판 (RViz2 "Publish Point"는 클릭한 곳에 물체가 있어야 점이 찍힘)
-        floor = self.make_marker(5, Marker.CUBE, 0.12, 0.28, 0.12)
-        floor.pose.position.z = -0.02
-        floor.scale.x, floor.scale.y, floor.scale.z = self.field_l + 1.0, self.field_w + 1.0, 0.01
-        arr.markers.append(floor)
 
         # 4: 공 (하얀 공)
         if self.has_ball:

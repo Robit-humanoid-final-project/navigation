@@ -13,17 +13,20 @@
   Ctrl + 왼쪽 클릭 후 끌기   = 로봇 옮기기
 
 로봇마다 (robot1, robot2):
-  받는 토픽:  /robotN/robot_pose, /robotN/nav_path, /robotN/nav_status, /robotN/nav_remain, /robotN/nav_cmd,
+  받는 토픽:  /robotN/robot_pose, /robotN/nav_path, /robotN/nav_feedback (NavFeedback), /robotN/nav_cmd,
               /robotN/nav_markers (가짜 로봇 그림), /robotN/nav_debug (내비게이션 그림)
-  보내는 토픽: /robotN/nav_goal (목표), /robotN/nav_cancel (목표 취소: Stop, Reset),
-              /robotN/nav_left_only (Ready 버튼: 두 로봇 모두 LEFT 진영만),
+  보내는 토픽: /robotN/nav_command (NavCommand, Taskplanner 대신: 목표, Stop, Ready, 공 피하기),
               /robotN/initialpose (로봇 옮기기)
 같이 쓰는 토픽: /ball_pose (받음), /clicked_point (공 옮기기, 보냄)
+공 앞으로 버튼: 고른 로봇에게 "공 앞" 목표를 보냄
+  공 앞 = 공에서 상대 골대(오른쪽, x = +4.5) 반대쪽으로 "공 앞 거리"만큼 뒤, 골대 쪽 바라보기
+  (그 안쪽에서 골대 방향 맞추기·킥은 Vision이 맡음)
 튜닝 값은 ROS2 파라미터로 바꿈 (ros2 param set 과 같음)
 """
 import math
 import signal
 import sys
+import time
 
 import rclpy
 from rclpy.node import Node
@@ -31,7 +34,7 @@ from rclpy.parameter import Parameter, parameter_value_to_python
 from rclpy.parameter_client import AsyncParameterClient
 from geometry_msgs.msg import Point, PointStamped, Pose2D, PoseWithCovarianceStamped, Twist
 from nav_msgs.msg import Path
-from std_msgs.msg import Bool, Empty, Float32, String
+from humanoid_interfaces.msg import NavCommand, NavFeedback
 from visualization_msgs.msg import Marker, MarkerArray
 
 from python_qt_binding.QtCore import QPointF, QRectF, Qt, QTimer
@@ -40,6 +43,7 @@ from python_qt_binding.QtWidgets import (
     QApplication, QCheckBox, QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QMainWindow, QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
+from robit_navigation.ball_approach import ball_front_goal
 from robit_navigation.nav_core import field_to_robot
 
 FRAME = 'map'
@@ -58,16 +62,18 @@ PID_PARAMS = [
     ('kp_move', 'Kp 이동', 0, 5, 0.1, 2), ('ki_move', 'Ki 이동', 0, 5, 0.05, 2),
     ('kd_move', 'Kd 이동', 0, 5, 0.05, 2), ('kp_turn', 'Kp 회전', 0, 5, 0.1, 2),
     ('ki_turn', 'Ki 회전', 0, 5, 0.05, 2), ('kd_turn', 'Kd 회전', 0, 5, 0.05, 2),
-    ('max_move', '최대 이동 m/s', 0, 1, 0.05, 2), ('max_turn', '최대 회전 rad/s', 0, 3, 0.1, 2),
+    ('max_move', '최대 앞걸음 m/s', 0, 1, 0.05, 2), ('max_turn', '최대 회전 rad/s', 0, 3, 0.1, 2),
+    ('turn_in_place_deg', '제자리 회전 각도', 0, 180, 5, 1), ('walk_again_deg', '다시 걷기 각도', 0, 180, 5, 1),
+    ('near_dist', '옆걸음 거리 m', 0, 2, 0.05, 2), ('max_side', '옆걸음 최대(멀 때)', 0, 1, 0.01, 2),
+    ('max_side_near', '옆걸음 최대(가까울 때)', 0, 1, 0.01, 2), ('max_back', '뒷걸음 최대', 0, 1, 0.01, 2),
 ]
 PATH_PARAMS = [
     ('robot_radius', '로봇 반지름 m', 0, 1, 0.01, 2), ('margin', '여유 m', 0, 1, 0.01, 2),
     ('cone_radius', '꼬깔 반지름 m', 0, 1, 0.01, 2), ('ball_radius', '공 반지름 m', 0, 1, 0.01, 3),
-    ('approach_margin', '진입점 여유 m', 0, 2, 0.05, 2), ('tol_dist', '허용 거리 m', 0, 1, 0.01, 2),
+    ('tol_dist', '허용 거리 m', 0, 1, 0.01, 2),
     ('tol_yaw_deg', '허용 각도 도', 0, 90, 1, 1), ('carrot_points', '당근 (점 개수)', 1, 30, 1, 0),
     ('boundary_margin', '선 안쪽 여유 m', 0, 1, 0.05, 2), ('center_margin', '가운데선 여유 m', 0, 1, 0.05, 2),
 ]
-FAKE_PARAMS = [('slip', '미끄러짐 m/s', 0, 0.5, 0.01, 2)]
 
 STYLE = """
 QWidget { background: #55575b; color: #f0f0f0; font-size: 13px; }
@@ -100,43 +106,48 @@ class NavGuiNode(Node):
         super().__init__('nav_gui_node')
         # 로봇 이름 목록과 Reset 위치 (launch에서 줌)
         self.declare_parameter('robots', ['robot1', 'robot2'])
-        self.declare_parameter('starts_x', [-3.0, -3.0])
-        self.declare_parameter('starts_y', [-3.0, 3.0])
+        self.declare_parameter('starts_x', [-2.25, -2.25])
+        self.declare_parameter('starts_y', [-3.1, 3.1])
         self.declare_parameter('starts_yaw_deg', [90.0, -90.0])
+        # 준비 위치 (Ready 때 스스로 걸어갈 곳, LEFT 진영이면 자유)
+        self.declare_parameter('readys_x', [-0.8, -0.8])
+        self.declare_parameter('readys_y', [-1.2, 1.2])
+        self.declare_parameter('readys_yaw_deg', [0.0, 0.0])
         p = lambda n: list(self.get_parameter(n).value)
         self.names = p('robots')
         self.starts = {n: (x, y, a) for n, x, y, a in
                        zip(self.names, p('starts_x'), p('starts_y'), p('starts_yaw_deg'))}
+        self.readys = {n: (x, y, a) for n, x, y, a in
+                       zip(self.names, p('readys_x'), p('readys_y'), p('readys_yaw_deg'))}
 
-        self.data = {n: {'robot': None, 'path': [], 'status': '-', 'cmd': (0.0, 0.0, 0.0), 'remain': -1.0}
+        self.data = {n: {'robot': None, 'path': [], 'status': '-', 'cmd': (0.0, 0.0, 0.0), 'eta': -1.0}
                      for n in self.names}
         self.selected = self.names[0]   # 지금 조작하는 로봇
         self.ball = None           # (x, y)
         self.markers = {}          # (로봇, 토픽, ns, id) -> Marker
         self.log = None            # 화면 기록 함수 (창에서 연결)
-        self.goal_pub, self.init_pub, self.cancel_pub, self.left_pub, self.params = {}, {}, {}, {}, {}
+        self.nav_pub, self.init_pub, self.params = {}, {}, {}
+        # 로봇마다 Taskplanner 대신 보내는 NavCommand 내용 (바뀔 때마다 다시 보냄)
+        self.command = {n: NavCommand(nav_enable=False, avoid_ball=True) for n in self.names}
 
         for n in self.names:
             t = f'/{n}/' if n else '/'
             self.create_subscription(Pose2D, t + 'robot_pose', lambda m, n=n: self.on_pose(n, m), 10)
             self.create_subscription(Path, t + 'nav_path', lambda m, n=n: self.on_path(n, m), 10)
-            self.create_subscription(String, t + 'nav_status', lambda m, n=n: self.on_status(n, m), 10)
+            self.create_subscription(NavFeedback, t + 'nav_feedback', lambda m, n=n: self.on_feedback(n, m), 10)
             self.create_subscription(Twist, t + 'nav_cmd', lambda m, n=n: self.on_cmd(n, m), 10)
-            self.create_subscription(Float32, t + 'nav_remain',
-                                     lambda m, n=n: self.data[n].__setitem__('remain', m.data), 10)
             self.create_subscription(MarkerArray, t + 'nav_markers',
                                      lambda m, n=n: self.on_markers(n, 'fake', m), 10)
             self.create_subscription(MarkerArray, t + 'nav_debug',
                                      lambda m, n=n: self.on_markers(n, 'nav', m), 10)
-            self.goal_pub[n] = self.create_publisher(Pose2D, t + 'nav_goal', 10)
+            self.nav_pub[n] = self.create_publisher(NavCommand, t + 'nav_command', 10)
             self.init_pub[n] = self.create_publisher(PoseWithCovarianceStamped, t + 'initialpose', 10)
-            self.cancel_pub[n] = self.create_publisher(Empty, t + 'nav_cancel', 10)
-            self.left_pub[n] = self.create_publisher(Bool, t + 'nav_left_only', 10)
-            for kind in ('navigation_node', 'fake_robot_node'):
+            for kind in ('navigation_node',):
                 self.params[(n, kind)] = AsyncParameterClient(self, t + kind)
 
         self.create_subscription(PointStamped, '/ball_pose', self.on_ball, 10)
         self.ball_pub = self.create_publisher(PointStamped, '/clicked_point', 10)
+
 
     # 고른 로봇의 값 (로봇 기준 화면에서 씀)
     @property
@@ -165,10 +176,13 @@ class NavGuiNode(Node):
     def on_path(self, n, m):
         self.data[n]['path'] = [(p.pose.position.x, p.pose.position.y) for p in m.poses]
 
-    def on_status(self, n, m):
-        if m.data != self.data[n]['status'] and self.log:
-            self.log(f'{n} 상태: {m.data}')
-        self.data[n]['status'] = m.data
+    def on_feedback(self, n, m):
+        """NavFeedback: 상태 숫자 -> 글자, 도착 예상 시간"""
+        text = {0: 'IDLE', 1: 'MOVING', 2: 'ARRIVED', 3: 'BLOCKED'}.get(m.status, str(m.status))
+        if text != self.data[n]['status'] and self.log:
+            self.log(f'{n} 상태: {text}')
+        self.data[n]['status'] = text
+        self.data[n]['eta'] = m.eta_seconds
 
     def on_cmd(self, n, m):
         self.data[n]['cmd'] = (m.linear.x, m.linear.y, m.angular.z)
@@ -183,29 +197,47 @@ class NavGuiNode(Node):
                 self.markers[(n, topic, mk.ns, mk.id)] = mk
 
     # ---------- 보내기 (고른 로봇에게) ----------
-    def send_goal(self, x, y, yaw):
-        self.goal_pub[self.selected].publish(Pose2D(x=float(x), y=float(y), theta=float(yaw)))
-        self.log(f'{self.selected} 목표 보냄: ({x:.2f}, {y:.2f}), {math.degrees(yaw):.0f}도')
+    def publish_command(self, n):
+        self.nav_pub[n].publish(self.command[n])
+
+    def send_goal(self, x, y, yaw, n=None):
+        """목표 보내기: nav_enable = true + 목표 (허용 오차 0 = 내비게이션 기본값)"""
+        n = n or self.selected
+        c = self.command[n]
+        c.nav_enable, c.x, c.y, c.theta = True, float(x), float(y), float(yaw)
+        self.publish_command(n)
+        self.log(f'{n} 목표 보냄: ({x:.2f}, {y:.2f}), {math.degrees(yaw):.0f}도')
 
     def send_left_only(self, on):
-        """Ready: 두 로봇 모두 LEFT 진영만 다니게 (게임 상태라서 같이)"""
-        for pub in self.left_pub.values():
-            pub.publish(Bool(data=bool(on)))
-        self.log('Ready: LEFT 진영만 다님' if on else 'Playing: LEFT 진영 제한 해제')
+        """Ready: 두 로봇 모두 RIGHT 진영 금지 (게임 상태라서 같이)"""
+        for n in self.names:
+            self.command[n].forbid_right_half = bool(on)
+            self.publish_command(n)
+        self.log('Ready: RIGHT 진영 금지' if on else 'Playing: RIGHT 진영 금지 해제')
 
-    def send_cancel(self):
-        self.cancel_pub[self.selected].publish(Empty())
-        self.log(f'{self.selected} 목표 취소 (멈춤)')
+    def send_avoid_ball(self, on, n=None):
+        n = n or self.selected
+        self.command[n].avoid_ball = bool(on)
+        self.publish_command(n)
+        self.log(f'{n} 공 피하기 {"켬" if on else "끔"}')
 
-    def send_robot(self, x, y, yaw):
+    def send_cancel(self, n=None):
+        """멈추기: nav_enable = false"""
+        n = n or self.selected
+        self.command[n].nav_enable = False
+        self.publish_command(n)
+        self.log(f'{n} 멈춤 (nav_enable = false)')
+
+    def send_robot(self, x, y, yaw, n=None):
+        n = n or self.selected
         msg = PoseWithCovarianceStamped()
         msg.header.frame_id = FRAME
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.pose.pose.position.x, msg.pose.pose.position.y = float(x), float(y)
         msg.pose.pose.orientation.z = math.sin(yaw / 2.0)
         msg.pose.pose.orientation.w = math.cos(yaw / 2.0)
-        self.init_pub[self.selected].publish(msg)
-        self.log(f'{self.selected} 옮김: ({x:.2f}, {y:.2f}), {math.degrees(yaw):.0f}도')
+        self.init_pub[n].publish(msg)
+        self.log(f'{n} 옮김: ({x:.2f}, {y:.2f}), {math.degrees(yaw):.0f}도')
 
     def send_ball(self, x, y):
         msg = PointStamped()
@@ -516,8 +548,8 @@ class RobotView(QWidget):
         p.drawText(14, 56, f'앞 {front:+.2f} m/s   왼쪽 {left:+.2f} m/s   회전 {turn:+.2f} rad/s')
         if robot is not None:
             p.drawText(14, 76, f'로봇 ({robot[0]:+.2f}, {robot[1]:+.2f})  {math.degrees(robot[2]):+.0f}도')
-        remain = self.node.data[self.node.selected]['remain']
-        p.drawText(14, 96, f'남은 거리 {remain:.2f} m' if remain >= 0 else '남은 거리 -')
+        eta = self.node.data[self.node.selected]['eta']
+        p.drawText(14, 96, f'도착 예상 {eta:.1f} 초' if eta >= 0 else '도착 예상 -')
         p.setPen(QColor('#888888'))
         p.drawText(w - 170, 20, f'{self.node.selected} 기준 화면')
         p.end()
@@ -562,11 +594,14 @@ class MainWindow(QMainWindow):
         self.redraw.start(50)           # 1초에 20번 다시 그림
         self.log('Navigation UI 시작')
         # 로봇마다 입력칸 값을 따로 기억 (로봇을 바꿔도 입력한 값이 안 지워지게)
-        #   Robot 줄 = 그 로봇 시작 위치, Goal 줄 = 예시 목표
+        #   Robot 줄 = 그 로봇 시작 위치, Goal 줄 = 예시 목표, Ready 줄 = 준비 위치
         self.saved = {}
         for k, n in enumerate(self.node.names):
             st = self.node.starts.get(n, (-3.0, -3.0, 90.0))
-            self.saved[n] = {'robot': st, 'goal': (-1.5, 1.0 - 2.0 * k, 0.0)}
+            rd = self.node.readys.get(n, (-0.8, 0.0, 0.0))
+            self.saved[n] = {'robot': st, 'goal': (-1.5, 1.0 - 2.0 * k, 0.0), 'ready': rd}
+        self.ready_wait = None     # Ready 중 아직 준비 위치에 도착 안 한 로봇들
+        self.ready_sent = 0.0
         self.shown = None          # 지금 입력칸에 보이는 로봇
         self.select(self.node.selected)
         QTimer.singleShot(1500, self.read_all)   # 노드가 켜지면 지금 값 읽어오기
@@ -598,7 +633,10 @@ class MainWindow(QMainWindow):
             self.pick_buttons[n] = b
             pick.addWidget(b)
         pick.addSpacing(20)
-        self.ready_btn = QPushButton('Ready (LEFT만)')
+        setting = QPushButton('모두 세팅 위치로')   # 규정: 경기 전 LEFT 진영 터치라인 세팅 위치에 놓기
+        setting.clicked.connect(self.on_all_setting)
+        pick.addWidget(setting)
+        self.ready_btn = QPushButton('Ready')
         self.ready_btn.setCheckable(True)
         self.ready_btn.toggled.connect(self.on_ready)
         pick.addWidget(self.ready_btn)
@@ -608,9 +646,10 @@ class MainWindow(QMainWindow):
         g.setHorizontalSpacing(10)
         hl, hw = FIELD_L / 2, FIELD_W / 2
         st = self.node.starts.get(self.node.selected, (-3.0, -3.0, 90.0))
-        self.rx, self.ry, self.ryaw = self.spin(-hl, hl, 0.1, 2, st[0]), self.spin(-hw, hw, 0.1, 2, st[1]), self.spin(-180, 180, 5, 0, st[2])
+        self.rx, self.ry, self.ryaw = self.spin(-hl - 0.5, hl + 0.5, 0.1, 2, st[0]), self.spin(-hw - 0.5, hw + 0.5, 0.1, 2, st[1]), self.spin(-180, 180, 5, 0, st[2])
         self.gx, self.gy, self.gyaw = self.spin(-hl, hl, 0.1, 2, -1.5), self.spin(-hw, hw, 0.1, 2, 0.0), self.spin(-180, 180, 5, 0, 0)
         self.bx, self.by = self.spin(-hl, hl, 0.1, 2, 0.0), self.spin(-hw, hw, 0.1, 2, 1.0)
+        self.qx, self.qy, self.qyaw = self.spin(-hl, 0.0, 0.1, 2, -0.8), self.spin(-hw, hw, 0.1, 2, 0.0), self.spin(-180, 180, 5, 0, 0)
 
         rows = [('Robot', (self.rx, self.ry, self.ryaw), 'Set', self.on_set_robot),
                 ('Goal', (self.gx, self.gy, self.gyaw), 'Go', self.on_go),
@@ -618,14 +657,16 @@ class MainWindow(QMainWindow):
         for c, h in enumerate(['', 'X (m)', 'Y (m)', '각도 (도)']):
             if h:
                 g.addWidget(QLabel(h), 0, c, Qt.AlignCenter)
+        rows.append(('Ready 위치', (self.qx, self.qy, self.qyaw), None, None))   # 준비 위치 (LEFT 진영)
         for r, (name, boxes, btn, fn) in enumerate(rows, start=1):
             g.addWidget(self.tag(name), r, 0)
             for c, b in enumerate(boxes, start=1):
                 if b is not None:
                     g.addWidget(b, r, c)
-            button = QPushButton(btn)
-            button.clicked.connect(fn)
-            g.addWidget(button, r, 4)
+            if btn:
+                button = QPushButton(btn)
+                button.clicked.connect(fn)
+                g.addWidget(button, r, 4)
 
         reset = QPushButton('Reset')          # 목표 취소 + 시작 위치로
         reset.clicked.connect(self.on_reset)
@@ -633,6 +674,20 @@ class MainWindow(QMainWindow):
         stop = QPushButton('Stop')            # 목표 취소 (그 자리에 멈춤)
         stop.clicked.connect(self.node.send_cancel)
         g.addWidget(stop, 2, 5)
+
+        front = QHBoxLayout()                 # 공 앞으로 가기 (그 안쪽은 Vision이 맡음)
+        front.addWidget(self.tag('공 앞 거리 (m)'))
+        self.front_dist = self.spin(0.3, 2.0, 0.05, 2, 0.5)
+        front.addWidget(self.front_dist)
+        go_front = QPushButton('공 앞으로')
+        go_front.setStyleSheet('background: #2e7d32;')
+        go_front.clicked.connect(self.on_ball_front)
+        front.addWidget(go_front)
+        self.avoid = QCheckBox('공 피하기')      # NavCommand.avoid_ball (고른 로봇)
+        self.avoid.setChecked(True)
+        self.avoid.toggled.connect(lambda on: self.node.send_avoid_ball(on))
+        front.addWidget(self.avoid)
+        front.addStretch()
 
         logo = QFrame()
         logo.setObjectName('logo')
@@ -648,12 +703,13 @@ class MainWindow(QMainWindow):
         box = QVBoxLayout()
         box.addLayout(pick)
         box.addLayout(g)
+        box.addLayout(front)
         box.addStretch()
         box.addWidget(logo, 0, Qt.AlignLeft)
         return box
 
     # ---------- 오른쪽 아래: 튜닝 탭 ----------
-    def make_tab(self, params, node_name, extra=None):
+    def make_tab(self, params, node_name):
         w = QWidget()
         g = QGridLayout(w)
         boxes = {}
@@ -667,10 +723,8 @@ class MainWindow(QMainWindow):
                 b.setSingleStep(step)
                 b.setDecimals(dec)
             boxes[name] = b
-            g.addWidget(self.tag(label), k % 4 + (1 if extra else 0), (k // 4) * 2)
-            g.addWidget(b, k % 4 + (1 if extra else 0), (k // 4) * 2 + 1)
-        if extra:
-            g.addWidget(extra, 0, 0, 1, 2)
+            g.addWidget(self.tag(label), k % 5, (k // 5) * 2)   # 한 줄에 5개씩
+            g.addWidget(b, k % 5, (k // 5) * 2 + 1)
         apply_btn, read_btn = QPushButton('Apply'), QPushButton('Read')
         g.addWidget(apply_btn, 0, 6)
         g.addWidget(read_btn, 1, 6)
@@ -678,34 +732,27 @@ class MainWindow(QMainWindow):
         def apply():
             vals = {n: (int(b.value()) if isinstance(b, QSpinBox) else round(float(b.value()), 4))
                     for n, b in boxes.items()}
-            if extra is not None:
-                vals['avoid_ball'] = extra.isChecked()
             self.node.set_params(node_name, vals)
 
         apply_btn.clicked.connect(apply)
-        read_btn.clicked.connect(lambda: self.read(node_name, boxes, extra))
-        return w, (node_name, boxes, extra)
+        read_btn.clicked.connect(lambda: self.read(node_name, boxes))
+        return w, (node_name, boxes)
 
     def make_tabs(self):
         tabs = QTabWidget()
-        self.avoid = QCheckBox('공 피하기 (avoid_ball)')
         pid, a = self.make_tab(PID_PARAMS, 'navigation_node')
-        path, b = self.make_tab(PATH_PARAMS, 'navigation_node', self.avoid)
-        fake, c = self.make_tab(FAKE_PARAMS, 'fake_robot_node')
-        self.tab_info = [a, b, c]
+        path, b = self.make_tab(PATH_PARAMS, 'navigation_node')
+        self.tab_info = [a, b]
         tabs.addTab(pid, 'PID')
         tabs.addTab(path, 'Path')
-        tabs.addTab(fake, 'Fake Robot')
         return tabs
 
-    def read(self, node_name, boxes, extra):
-        names = list(boxes) + (['avoid_ball'] if extra is not None else [])
+    def read(self, node_name, boxes):
+        names = list(boxes)
 
         def fill(vals):
             for n, v in vals.items():
-                if n == 'avoid_ball':
-                    extra.setChecked(bool(v))
-                elif v is not None:
+                if v is not None:
                     boxes[n].setValue(int(v) if isinstance(boxes[n], QSpinBox) else float(v))
         self.node.get_params(node_name, names, fill)
 
@@ -723,10 +770,56 @@ class MainWindow(QMainWindow):
     def on_set_ball(self):
         self.node.send_ball(self.bx.value(), self.by.value())
 
+    def on_ball_front(self):
+        """고른 로봇을 공 앞으로: 공에서 상대 골대 반대쪽으로 '공 앞 거리' 뒤, 골대 쪽 바라보기"""
+        if self.node.ball is None:
+            self.log('공 위치를 아직 모름')
+            return
+        x, y, yaw = ball_front_goal(self.node.ball, (FIELD_L / 2.0, 0.0), self.front_dist.value())
+        self.set_goal_inputs(x, y, yaw)
+        self.node.send_goal(x, y, yaw)
+
+    def on_all_setting(self):
+        """두 로봇 모두 목표 취소 + 세팅 위치에 놓기 (경기 시작 전)"""
+        for n in self.node.names:
+            st = self.node.starts.get(n, (-3.0, -3.0, 90.0))
+            self.node.send_cancel(n)
+            self.node.send_robot(st[0], st[1], math.radians(st[2]), n)
+        self.set_robot_inputs(*self.node.starts[self.node.selected][:2],
+                              math.radians(self.node.starts[self.node.selected][2]))
+
     def on_ready(self, on):
+        """
+        Ready 켜기: RIGHT 진영 금지 + 두 로봇을 각자 준비 위치로 보냄 (규정: 스스로 걸어가서 정지)
+        둘 다 도착하면 Text에 '준비 완료'. 끄기 = Playing (RIGHT 진영 제한 해제)
+        """
         self.ready_btn.setStyleSheet('background: #c62828; border: 3px solid #ffe14d;' if on else '')
-        self.ready_btn.setText('Ready (LEFT만) 켜짐' if on else 'Ready (LEFT만)')
+        self.ready_btn.setText('Ready 켜짐 (끄면 Playing)' if on else 'Ready')
         self.node.send_left_only(on)
+        if not on:
+            self.ready_wait = None
+            return
+        self.save_inputs()
+        for n in self.node.names:
+            x, y, a = self.saved[n]['ready']
+            self.node.send_goal(x, y, math.radians(a), n)
+        self.ready_wait = set(self.node.names)
+        self.ready_sent = time.monotonic()
+
+    def check_ready(self):
+        """Ready 중: 두 로봇이 준비 위치에 도착했는지 (보낸 직후의 예전 상태는 무시)"""
+        if not self.ready_wait or time.monotonic() - self.ready_sent < 1.0:
+            return
+        for n in list(self.ready_wait):
+            st = self.node.data[n]['status']
+            if st == 'ARRIVED':
+                self.ready_wait.discard(n)
+            elif st == 'BLOCKED':
+                self.log(f'{n} 준비 위치로 못 감 (BLOCKED): 준비 위치가 LEFT 진영 안쪽인지 확인')
+                self.ready_wait.discard(n)
+        if not self.ready_wait:
+            self.ready_wait = None
+            self.log('준비 완료: 두 로봇 모두 준비 위치에서 정지')
 
     def on_reset(self):
         self.node.send_cancel()               # 예전 목표로 다시 출발하지 않게 먼저 취소
@@ -737,15 +830,17 @@ class MainWindow(QMainWindow):
     def select(self, n):
         """조작할 로봇 바꾸기: 버튼 색, 입력칸, 튜닝 값을 그 로봇 것으로"""
         # 지금 보이는 로봇의 입력칸 값을 저장하고, 고른 로봇의 저장된 값을 불러옴
-        if self.shown is not None:
-            self.saved[self.shown] = {
-                'robot': (self.rx.value(), self.ry.value(), self.ryaw.value()),
-                'goal': (self.gx.value(), self.gy.value(), self.gyaw.value())}
+        self.save_inputs()
         (rx, ry, ra), (gx, gy, ga) = self.saved[n]['robot'], self.saved[n]['goal']
+        qx, qy, qa = self.saved[n]['ready']
         self.rx.setValue(rx), self.ry.setValue(ry), self.ryaw.setValue(ra)
         self.gx.setValue(gx), self.gy.setValue(gy), self.gyaw.setValue(ga)
+        self.qx.setValue(qx), self.qy.setValue(qy), self.qyaw.setValue(qa)
         self.shown = n
         self.node.selected = n
+        self.avoid.blockSignals(True)
+        self.avoid.setChecked(self.node.command[n].avoid_ball)
+        self.avoid.blockSignals(False)
         for name, b in self.pick_buttons.items():
             b.setChecked(name == n)
             k = self.node.names.index(name)
@@ -753,6 +848,14 @@ class MainWindow(QMainWindow):
                             if name == n else '')
         self.read_all()
         self.log(f'조작할 로봇: {n}')
+
+    def save_inputs(self):
+        """지금 보이는 로봇의 입력칸 값을 저장"""
+        if self.shown is not None:
+            self.saved[self.shown] = {
+                'robot': (self.rx.value(), self.ry.value(), self.ryaw.value()),
+                'goal': (self.gx.value(), self.gy.value(), self.gyaw.value()),
+                'ready': (self.qx.value(), self.qy.value(), self.qyaw.value())}
 
     def set_robot_inputs(self, x, y, yaw):
         self.rx.setValue(x), self.ry.setValue(y), self.ryaw.setValue(math.degrees(yaw))
@@ -768,6 +871,7 @@ class MainWindow(QMainWindow):
         rclpy.spin_once(self.node, timeout_sec=0.0)    # ROS2 메시지 처리
         for _ in range(20):                            # 쌓인 메시지도 처리
             rclpy.spin_once(self.node, timeout_sec=0.0)
+        self.check_ready()
         self.field.update()
         self.robot_view.update()
 

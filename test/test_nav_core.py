@@ -70,3 +70,24 @@ def test_path_remaining():
     assert close(path_remaining(path, (0.0, 0.0)), 2.0)
     assert close(path_remaining(path, (1.0, 0.0)), 1.0)      # 모서리: 남은 1m
     assert close(path_remaining(path, (1.0, 1.0)), 0.0)      # 끝
+
+
+def test_obstacle_memory_field_frame():
+    # Localization(world_model)처럼 필드 기준으로 받아도 같은 꼬깔로 기억
+    mem = ObstacleMemory()
+    r = (0, 0, 0)
+    mem.update_field(r, [(1.0, 0.0)], 0.0)
+    assert mem.update_field(r, [(1.02, -0.01)], 0.1) and len(mem.confirmed()) == 1
+    mem.update_field((0, 0, R(180)), [], 10.0)
+    assert len(mem.confirmed()) == 1            # 안 보이는 쪽이면 계속 기억
+
+
+def test_to_walk():
+    from robit_navigation.nav_core import to_walk
+    m = (0.3, 0.15, 1.0, 40.0, 20.0, 10.0)      # max_move, max_side, max_turn, ik 최대값
+    assert to_walk(0.3, 0.0, 0.0, *m) == (40.0, 0.0, 0.0, 1.0)        # 최대 앞 = x 최대값
+    assert to_walk(0.15, 0.0, 0.0, *m) == (20.0, 0.0, 0.0, 1.0)       # 절반 = 절반
+    assert to_walk(0.0, -0.15, 0.5, *m) == (0.0, -20.0, 5.0, 1.0)     # 오른쪽 옆걸음, 왼쪽 반 회전
+    assert to_walk(9.0, 0.0, 0.0, *m)[0] == 40.0                      # 최대값 넘지 않음
+    assert to_walk(0.0, 0.0, 0.0, *m) == (0.0, 0.0, 0.0, 0.0)         # 멈춤 = flag 0
+    assert to_walk(0.0, 0.0, 1.0, 0.3, 0.15, 1.0, 40.0, 20.0, -10.0)[2] == -10.0   # 음수 = 방향 반대

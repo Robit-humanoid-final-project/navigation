@@ -1,38 +1,44 @@
 """
 내비게이션 노드 (내 담당 부분)
 
-받는 토픽 (임시 이름, 팀 합의 후 변경):
-  /robot_pose        geometry_msgs/Pose2D       내 위치 x, y [m], theta(yaw) [rad]   <- Localization 대신
-  /nav_goal          geometry_msgs/Pose2D       목표 x, y [m], theta [rad]          <- Taskplanner 대신
-  /nav_cancel        std_msgs/Empty             목표 취소: 멈추고 IDLE (Taskplanner, UI의 Stop·Reset)
-  /nav_left_only     std_msgs/Bool              true: LEFT 진영만 다님 (Ready 때, RIGHT 진영 들어가면 실패)
-                     로봇 중심이 가운데선에서 center_margin 만큼 왼쪽까지만 감 / false: 제한 없음 (Playing)
-  /goal_pose         geometry_msgs/PoseStamped  RViz2 "2D Goal Pose" 버튼으로 찍은 목표 (테스트용)
-  /ball_pose         geometry_msgs/PointStamped 공 위치 <- Vision/Localization 대신
-                     header.frame_id = "map": 필드 기준 / 그 밖: 로봇 기준 (x 앞, y 왼쪽)
-  /teammate_pose     geometry_msgs/Pose2D       우리 팀 다른 로봇 위치 (필드 기준) <- UDP 대신
-                     꼬깔처럼 피함 (움직이니까 계속 다시 계획). 1초 넘게 안 오면 무시
-                     양보(yield_to_teammate)나 안전 정지 때는 멈추고 WAITING
-  /vision_obstacles  geometry_msgs/PoseArray    지금 카메라에 보이는 꼬깔 <- Vision (vision_packages의 obstacle[] 대신)
-                     header.frame_id = "base_footprint": position.x 앞, position.y 왼쪽 [m] (로봇 기준)
-                     header.frame_id = "map": 필드 기준 (테스트용)
-                     받은 꼬깔은 필드 기준으로 바꿔서 기억함 (obstacle_memory)
+받는 토픽 (팀 메시지 humanoid_interfaces):
+  nav_command    humanoid_interfaces/NavCommand   <- Taskplanner
+                 nav_enable        : true일 때만 걸음. false = 멈추고 IDLE (Vision이 공 앞을 맡을 때 등)
+                 x, y, theta       : 목표 (필드 기준, m, rad)
+                 pos_tolerance     : 이 거리 안이면 도착 (m), 0 이하면 tol_dist 사용
+                 theta_tolerance   : 이 각도 안이면 도착 (rad), 0 이하면 tol_yaw_deg 사용
+                 forbid_right_half : true = RIGHT 진영 금지 (Ready). 로봇 중심이 가운데선에서 center_margin 왼쪽까지만
+                 avoid_ball        : true = 공을 장애물로 피함 (공 주변 0.37m 안으로 안 들어감)
+  world_model    humanoid_interfaces/WorldModel   <- Localization (모두 필드 기준)
+                 robot_pose        : 내 위치 x, y [m], theta [rad]
+                 ball_pose, ball_detected : 공 위치 (안 보이면 마지막으로 본 위치를 씀)
+                 obstacles         : 지금 보이는 꼬깔 -> 꼬깔 기억(obstacle_memory)으로 기억해서 씀
+                 is_localized      : 아직 Localization에서 구현 안 됨 (항상 false) -> require_localized 가
+                                     true일 때만 봄 (위치를 못 믿으면 NO_POSE로 멈춤)
+  teammate_pose  geometry_msgs/Pose2D             우리 팀 다른 로봇 위치 (필드 기준) <- UDP (메시지 미정)
+                 꼬깔처럼 피함. 1초 넘게 안 오면 무시. 양보(yield_to_teammate)·안전 정지 때는 멈춤
 
-보내는 토픽 (임시 이름, 팀 합의 후 변경):
-  /nav_cmd           geometry_msgs/Twist        linear.x 앞, linear.y 왼쪽 [m/s], angular.z 회전 [rad/s]
-  /nav_status        std_msgs/String            IDLE / MOVING / ARRIVED / NO_POSE / BLOCKED / WAITING
-  /nav_remain        std_msgs/Float32           목표까지 경로로 남은 거리 [m]
-                     MOVING·WAITING: 남은 경로 길이 / ARRIVED: 0 / IDLE·NO_POSE·BLOCKED: -1 (모름)
-  /nav_path          nav_msgs/Path              A-star 경로 (RViz2 표시용)
-  /nav_debug         visualization_msgs/MarkerArray  목표, 기억한 꼬깔 범위, 당근, 상태 글자 (RViz2 표시용)
+보내는 토픽:
+  nav_feedback   humanoid_interfaces/NavFeedback  -> Taskplanner
+                 status            : 0 대기(IDLE) / 1 이동 중(MOVING, 다른 로봇 기다리는 중 포함)
+                                     / 2 도착(ARRIVED) / 3 길 없음(BLOCKED, 위치 모름)
+                 eta_seconds       : 도착 예상 시간 (s) = 남은 경로 길이 / max_move. 도착 0, 길 없음 -1
+  master2ik      humanoid_interfaces/Master2IkMsg  -> 보행 (ik_walk)
+                 x_length, y_length, yaw = 내 속도를 비율로 바꾼 값 (to_walk)
+                   예) 앞 속도가 max_move 면 x_length = ik_max_x, 절반이면 ik_max_x 의 절반
+                 flag = 1 걷기, 0 멈춤
+                 (ik_max_x, ik_max_y, ik_max_yaw 는 임시 값: 보행 담당 답 오면 바꾸기)
+  nav_cmd        geometry_msgs/Twist   같은 명령을 m/s, rad/s 로 (가짜 로봇·UI용)
+                 linear.x 앞, linear.y 왼쪽 [m/s], angular.z 회전 [rad/s]
+  master2ik, nav_cmd 둘 다: IDLE이 되면 0을 한 번만 보내고 그다음엔 안 보냄 (Vision 명령과 안 섞이게)
+  nav_path       nav_msgs/Path                    A-star 경로 (화면 표시용)
+  nav_debug      visualization_msgs/MarkerArray   목표, 꼬깔·공 위험 범위, 당근, 상태 글자 (화면 표시용)
 
-공 피하기 (avoid_ball = True):
-  공도 장애물로 피하고, 목표가 공 바로 옆(킥 자리)이면 공 반대편으로 돌아가서 똑바로 들어감
-  = 공을 밀지 않고 차는 자리에 섬
+공 바로 앞에서 골대 방향 맞추기·킥 위치 맞추기는 Vision이 맡음 (그동안 Taskplanner가 nav_enable = false)
 
 이동, 회전 모두 PID 제어 (ki, kd = 0 이면 P만)
 튜닝 값은 실행 중에도 바꿀 수 있음 (빌드 다시 안 해도 됨):
-  ros2 param set /navigation_node ki_move 0.5
+  ros2 param set /robot1/navigation_node ki_move 0.5
 """
 import math
 
@@ -40,18 +46,20 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
-from geometry_msgs.msg import Point, PointStamped, Pose2D, PoseArray, PoseStamped, Twist
+from geometry_msgs.msg import Point, Pose2D, PoseStamped, Twist
 from nav_msgs.msg import Path
-from std_msgs.msg import Bool, Empty, Float32, String
 from visualization_msgs.msg import Marker, MarkerArray
+from humanoid_interfaces.msg import Master2IkMsg, NavCommand, NavFeedback, WorldModel
 
 from robit_navigation.astar import GridPlanner
 from robit_navigation.teammate import (SpeedEstimator, look_ahead_point, plan_with_teammate,
                                       should_yield, too_close)
-from robit_navigation.nav_core import ControllerParams, PathFollower, path_remaining, robot_to_field
+from robit_navigation.nav_core import ControllerParams, PathFollower, path_remaining, to_walk
 from robit_navigation.obstacle_memory import ObstacleMemory, ObstacleMemoryParams
 
 FRAME = 'map'
+# 상태 글자 -> NavFeedback.status 숫자 (팀 약속: 0 idle, 1 moving, 2 reached, 3 no path)
+STATUS_CODE = {'IDLE': 0, 'MOVING': 1, 'WAITING': 1, 'ARRIVED': 2, 'BLOCKED': 3, 'NO_POSE': 3}
 
 # 실행 중에 바꿀 수 있는 값 (이름: 기본값)
 TUNABLE = {
@@ -63,32 +71,41 @@ TUNABLE = {
     'd_alpha': 0.5,            # D 부드럽게 (0~1, 작을수록 부드러움)
     'max_move': 0.3,           # m/s
     'max_turn': 1.0,           # rad/s
-    'tol_dist': 0.10,          # m
-    'tol_yaw_deg': 10.0,       # 도
+    'tol_dist': 0.10,          # 기본 허용 거리 (m), NavCommand.pos_tolerance 가 0 이하일 때
+    'tol_yaw_deg': 10.0,       # 기본 허용 각도 (도), NavCommand.theta_tolerance 가 0 이하일 때
+    # 앞걸음 위주 (휴머노이드는 옆걸음·뒷걸음이 느리고 잘 넘어짐)
+    'turn_in_place_deg': 30.0, # 가려는 쪽이 이 각도보다 벗어나면 제자리 회전
+    'walk_again_deg': 15.0,    # 이 각도보다 작아지면 다시 걷기
+    'near_dist': 0.3,          # 목표가 이 거리 안이면 마지막 방향 보면서 옆걸음으로 맞춤 (m)
+    'max_side': 0.05,          # 멀 때 옆걸음 최대 (m/s)
+    'max_side_near': 0.15,     # 가까울 때 옆걸음 최대 (m/s)
+    'max_back': 0.05,          # 뒷걸음 최대 (m/s)
     'carrot_points': 5,        # 당근: 몇 개 앞 점
     'robot_radius': 0.15,      # 로봇 25 x 17cm를 덮는 원 반지름 (m)
     'margin': 0.15,            # 추가 여유 (m)
-    'center_margin': 0.2,      # LEFT 진영만 다닐 때 로봇 중심이 가운데선에서 떨어져야 하는 거리 (m)
+    'center_margin': 0.2,      # RIGHT 진영 금지일 때 로봇 중심이 가운데선에서 떨어져야 하는 거리 (m)
     'boundary_margin': 0.2,    # 로봇 중심이 필드 선에서 떨어져야 하는 거리 (m), 필드 밖 = 30초 페널티
     'cone_radius': 0.1,        # 꼬깔 14 x 14cm를 덮는 원 반지름 (m)
-    'replan_period': 1.0,      # 몇 초마다 다시 계획
-    # 공 피하기
-    'avoid_ball': True,        # True: 공을 밀지 않게 돌아서 감 / False: 공 무시
     'ball_radius': 0.07,       # 공 반지름 (지름 14cm) (m)
-    'approach_margin': 0.2,    # 킥 자리 진입점을 공 위험 범위보다 얼마나 바깥에 (m)
+    'replan_period': 1.0,      # 몇 초마다 다시 계획
+    'require_localized': False,  # True: world_model.is_localized 가 false면 멈춤 (Localization 구현 후 켜기)
     # 우리 팀 다른 로봇 피하기
     'teammate_radius': 0.15,   # 다른 로봇 몸통 반지름 (m)
     'yield_to_teammate': False,   # True: 다른 로봇이 가까이서 움직이면 멈춰서 양보 (한 로봇만 True)
     'yield_dist': 0.9,         # 이 거리 안에서 양보 (m)
     'stop_dist': 0.45,         # 다른 로봇이 바로 앞 이 거리 안이면 안전 정지 (m)
+    # 보행(master2ik)으로 보낼 최대값 (임시 값, 보행 담당 답 오면 바꾸기). 음수로 넣으면 방향 반대
+    'ik_max_x': 40.0,          # 앞 속도가 max_move 일 때 x_length
+    'ik_max_y': 20.0,          # 옆 속도가 max_side_near 일 때 y_length
+    'ik_max_yaw': 10.0,        # 회전 속도가 max_turn 일 때 yaw
 }
 # 시작할 때만 읽는 값
 STARTUP_ONLY = {
     'rate': 10.0,              # 1초에 몇 번 계산
-    'field_length': 9.0,       # m (예시 값)
+    'field_length': 9.0,       # m
     'field_width': 6.0,
     'grid_resolution': 0.1,    # 격자 한 칸 (m)
-    # 꼬깔 기억 (Vision 카메라 시야와 맞추기)
+    # 꼬깔 기억 (카메라 시야와 맞추기)
     'view_angle_deg': 60.0,    # 카메라 시야 전체 각도
     'view_range': 3.0,         # 카메라가 꼬깔을 볼 수 있는 거리 (m)
     'merge_dist': 0.3,         # 이 거리 안이면 같은 꼬깔
@@ -115,7 +132,10 @@ class NavigationNode(Node):
         self.robot = None          # 아직 위치를 못 받았으면 None
         self.goal = None           # 아직 목표를 못 받았으면 None
         self.obstacles = []        # 계획에 쓰는 꼬깔 [(x, y, 반지름), ...] (필드 기준)
-        self.left_only = False     # True: LEFT 진영만 다님 (Ready)
+        self.left_only = False     # True: RIGHT 진영 금지 (Ready), NavCommand.forbid_right_half
+        self.avoid_ball = True     # True: 공을 장애물로 피함, NavCommand.avoid_ball
+        self.localized = True      # world_model.is_localized
+        self.tol = (None, None)    # 이번 목표의 허용 거리·각도 (None = 기본값)
         self.ball = None           # 공 위치 (x, y) (필드 기준), 모르면 None
         self.teammate = None       # 다른 로봇 위치 (x, y) (필드 기준), 모르면 None
         self.teammate_time = None  # 다른 로봇 위치를 마지막으로 받은 시간
@@ -134,18 +154,13 @@ class NavigationNode(Node):
         self.add_post_set_parameters_callback(self.on_parameters_changed)
 
         # 받기
-        self.create_subscription(Pose2D, 'robot_pose', self.on_pose, 10)
-        self.create_subscription(Pose2D, 'nav_goal', self.on_goal, 10)
-        self.create_subscription(Empty, 'nav_cancel', self.on_cancel, 10)
-        self.create_subscription(Bool, 'nav_left_only', self.on_left_only, 10)
-        self.create_subscription(PoseStamped, 'goal_pose', self.on_click_goal, 10)
-        self.create_subscription(PoseArray, 'vision_obstacles', self.on_obstacles, 10)
-        self.create_subscription(PointStamped, 'ball_pose', self.on_ball, 10)
+        self.create_subscription(NavCommand, 'nav_command', self.on_command, 10)
+        self.create_subscription(WorldModel, 'world_model', self.on_world, 10)
         self.create_subscription(Pose2D, 'teammate_pose', self.on_teammate, 10)
         # 보내기
+        self.walk_pub = self.create_publisher(Master2IkMsg, 'master2ik', 10)
         self.cmd_pub = self.create_publisher(Twist, 'nav_cmd', 10)
-        self.status_pub = self.create_publisher(String, 'nav_status', 10)
-        self.remain_pub = self.create_publisher(Float32, 'nav_remain', 10)
+        self.feedback_pub = self.create_publisher(NavFeedback, 'nav_feedback', 10)
         self.path_pub = self.create_publisher(Path, 'nav_path', 10)
         self.debug_pub = self.create_publisher(MarkerArray, 'nav_debug', 10)
         # 반복 (기본 0.1초마다)
@@ -165,7 +180,7 @@ class NavigationNode(Node):
                 return SetParametersResult(successful=False, reason='carrot_points 는 1 이상')
             if n == 'd_alpha' and not 0.0 < v <= 1.0:
                 return SetParametersResult(successful=False, reason='d_alpha 는 0보다 크고 1 이하')
-            if isinstance(v, (int, float)) and v < 0:
+            if isinstance(v, (int, float)) and v < 0 and not n.startswith('ik_max'):
                 return SetParametersResult(successful=False, reason=f'{n} 는 0 이상')
         return SetParametersResult(successful=True)
 
@@ -183,89 +198,97 @@ class NavigationNode(Node):
             kp_turn=p('kp_turn'), ki_turn=p('ki_turn'), kd_turn=p('kd_turn'),
             i_limit_turn=p('i_limit_turn'),
             d_alpha=p('d_alpha'), max_move=p('max_move'), max_turn=p('max_turn'),
-            tol_dist=p('tol_dist'), tol_yaw=math.radians(p('tol_yaw_deg')))
+            tol_dist=p('tol_dist'), tol_yaw=math.radians(p('tol_yaw_deg')),
+            turn_in_place=math.radians(p('turn_in_place_deg')),
+            walk_again=math.radians(p('walk_again_deg')),
+            near_dist=p('near_dist'), max_side=p('max_side'),
+            max_side_near=p('max_side_near'), max_back=p('max_back'))
         self.cone_radius = p('cone_radius')
         self.replan_period = p('replan_period')
-        self.avoid_ball = bool(self.get_parameter('avoid_ball').value)
+        self.require_localized = bool(self.get_parameter('require_localized').value)
         self.ball_radius = p('ball_radius')
-        self.approach_margin = p('approach_margin')
         self.teammate_radius = p('teammate_radius')
         self.yield_to_teammate = bool(self.get_parameter('yield_to_teammate').value)
         self.yield_dist = p('yield_dist')
         self.stop_dist = p('stop_dist')
+        self.ik_max = (p('ik_max_x'), p('ik_max_y'), p('ik_max_yaw'))
         self.obstacles = [(x, y, self.cone_radius) for x, y, _ in self.obstacles]
+        self.default_tol = (cp.tol_dist, cp.tol_yaw)
         self.follower = PathFollower(cp, int(self.get_parameter('carrot_points').value))
+        self.set_tolerance(*self.tol) if hasattr(self, 'tol') else None
         hl, hw = self.field_l / 2.0, self.field_w / 2.0
         self.planner = GridPlanner(-hl, hl, -hw, hw, resolution=self.res,
                                    robot_radius=p('robot_radius'), margin=p('margin'),
                                    boundary_margin=p('boundary_margin'))
-        self.planner.set_max_x(-p('center_margin') if getattr(self, 'left_only', False) else None)
+        self.planner.set_max_x(-p('center_margin') if self.left_only else None)
+
+    def set_tolerance(self, dist, yaw):
+        """이번 목표의 허용 오차 (None 이면 기본값 tol_dist, tol_yaw_deg)"""
+        self.follower.p.tol_dist = dist if dist else self.default_tol[0]
+        self.follower.p.tol_yaw = yaw if yaw else self.default_tol[1]
 
     # ---------------- 받기 ----------------
-    def on_pose(self, msg):
-        self.robot = (msg.x, msg.y, msg.theta)
-
-    def on_click_goal(self, msg):
-        """RViz2 "2D Goal Pose" 버튼: 위치 + 방향(쿼터니언)을 Pose2D로 바꿔서 같은 방식으로 처리"""
-        q = msg.pose.orientation
-        yaw = math.atan2(2.0 * (q.w * q.z + q.x * q.y), 1.0 - 2.0 * (q.y * q.y + q.z * q.z))
-        self.on_goal(Pose2D(x=msg.pose.position.x, y=msg.pose.position.y, theta=yaw))
-
-    def on_left_only(self, msg):
-        """Ready(LEFT 진영만) 켜기/끄기: 가운데선 금지선을 지도에 넣거나 뺀다"""
-        if msg.data == getattr(self, 'left_only', False):
+    def on_command(self, msg):
+        """
+        Taskplanner의 NavCommand. Taskplanner가 같은 명령을 계속 보내도 되게,
+        목표가 바뀌었을 때만 새 목표로 처리 (PID에 쌓인 값을 지우고 다시 계획)
+        """
+        # RIGHT 진영 금지 (Ready)
+        if msg.forbid_right_half != self.left_only:
+            self.left_only = msg.forbid_right_half
+            margin = float(self.get_parameter('center_margin').value)
+            self.planner.set_max_x(-margin if self.left_only else None)
+            self.need_replan = True
+            self.get_logger().info('RIGHT 진영 금지 (Ready)' if self.left_only else 'RIGHT 진영 금지 해제')
+        # 공 피하기
+        if msg.avoid_ball != self.avoid_ball:
+            self.avoid_ball = msg.avoid_ball
+            self.need_replan = True
+        # 걷기 끄기 = 목표 취소 (멈추고 IDLE)
+        if not msg.nav_enable:
+            self.cancel()
             return
-        self.left_only = msg.data
-        margin = float(self.get_parameter('center_margin').value)
-        self.planner.set_max_x(-margin if msg.data else None)
+        # 허용 오차 (0 이하면 기본값)
+        tol = (msg.pos_tolerance if msg.pos_tolerance > 0.0 else None,
+               msg.theta_tolerance if msg.theta_tolerance > 0.0 else None)
+        if tol != self.tol:
+            self.tol = tol
+            self.set_tolerance(*tol)
+        # 목표: 2cm 또는 2도 넘게 바뀌었을 때만 새 목표
+        goal = (msg.x, msg.y, msg.theta)
+        if self.goal is not None and math.hypot(goal[0] - self.goal[0], goal[1] - self.goal[1]) < 0.02 \
+                and abs(math.remainder(goal[2] - self.goal[2], 2 * math.pi)) < math.radians(2.0):
+            return
+        self.goal = goal
         self.need_replan = True
-        self.get_logger().info('LEFT 진영만 다님 (Ready)' if msg.data else 'LEFT 진영 제한 해제 (Playing)')
+        self.follower.reset()    # 새 목표: PID에 쌓인 값(I)과 이전 오차(D)를 지움
+        self.get_logger().info(f'새 목표: ({goal[0]:.2f}, {goal[1]:.2f}), {math.degrees(goal[2]):.0f}도')
 
-    def on_cancel(self, _msg):
-        """목표 취소: 목표와 경로를 지우고 멈춤 (다음 반복에서 IDLE, 정지 명령)"""
+    def cancel(self):
+        """목표 취소: 목표와 경로를 지우고 멈춤 (다음 반복에서 IDLE, 정지 명령 한 번)"""
         if self.goal is None:
             return
         self.goal = None
         self.path = None
         self.follower.reset()
         self.publish_path()             # 화면의 경로도 지움
-        self.get_logger().info('목표 취소')
+        self.get_logger().info('목표 취소 (nav_enable = false)')
 
-    def on_goal(self, msg):
-        self.goal = (msg.x, msg.y, msg.theta)
-        self.need_replan = True
-        self.follower.reset()    # 새 목표: PID에 쌓인 값(I)과 이전 오차(D)를 지움
-        self.get_logger().info(
-            f'새 목표: ({msg.x:.2f}, {msg.y:.2f}), {math.degrees(msg.theta):.0f}도')
-
-    def on_obstacles(self, msg):
-        if msg.header.frame_id == FRAME:
-            # 필드 기준으로 온 경우 (테스트용): 그대로 사용
-            new = [(ps.position.x, ps.position.y, self.cone_radius) for ps in msg.poses]
-            changed = [(x, y) for x, y, _ in new] != [(x, y) for x, y, _ in self.obstacles]
-        else:
-            # 로봇 기준으로 온 경우 (Vision): 내 위치를 알아야 필드 기준으로 바꿀 수 있음
-            if self.robot is None:
-                return
-            seen = [(ps.position.x, ps.position.y) for ps in msg.poses]
-            now = self.get_clock().now().nanoseconds * 1e-9
-            changed = self.memory.update(self.robot, seen, now)
-            new = [(x, y, self.cone_radius) for x, y in self.memory.confirmed()]
-        self.obstacles = new
-        if changed:
+    def on_world(self, msg):
+        """Localization의 WorldModel: 내 위치, 공, 지금 보이는 꼬깔 (모두 필드 기준)"""
+        self.robot = (msg.robot_pose.x, msg.robot_pose.y, msg.robot_pose.theta)
+        self.localized = msg.is_localized
+        # 공: 보일 때만 갱신 (안 보이면 마지막으로 본 위치). 5cm 넘게 움직였으면 다시 계획
+        if msg.ball_detected:
+            ball = (msg.ball_pose.x, msg.ball_pose.y)
+            if self.ball is None or math.hypot(ball[0] - self.ball[0], ball[1] - self.ball[1]) > 0.05:
+                self.need_replan = True
+            self.ball = ball
+        # 꼬깔: 지금 보이는 것만 오니까 기억해서 씀
+        now = self.get_clock().now().nanoseconds * 1e-9
+        if self.memory.update_field(self.robot, [(p.x, p.y) for p in msg.obstacles], now):
             self.need_replan = True     # 꼬깔이 새로 보이거나 사라지면 바로 다시 계획
-
-    def on_ball(self, msg):
-        if msg.header.frame_id == FRAME:
-            ball = (msg.point.x, msg.point.y)             # 필드 기준
-        else:
-            if self.robot is None:
-                return
-            ball = robot_to_field(self.robot, msg.point.x, msg.point.y)   # 로봇 기준 -> 필드 기준
-        # 공이 5cm 넘게 움직였으면 바로 다시 계획
-        if self.ball is None or math.hypot(ball[0] - self.ball[0], ball[1] - self.ball[1]) > 0.05:
-            self.need_replan = True
-        self.ball = ball
+        self.obstacles = [(x, y, self.cone_radius) for x, y in self.memory.confirmed()]
 
     def on_teammate(self, msg):
         self.teammate = (msg.x, msg.y)
@@ -291,7 +314,7 @@ class NavigationNode(Node):
         # 다른 로봇 = 움직이는 꼬깔 (다른 로봇 때문에 길이 없으면 빼고 다시: 곧 비킬 테니까)
         self.path = plan_with_teammate(self.planner, self.robot[:2], self.goal[:2], self.obstacles,
                                        mate, self.teammate_radius,
-                                       ball, self.ball_radius, self.approach_margin)
+                                       ball, self.ball_radius)
         self.last_plan_time = self.get_clock().now()
         self.need_replan = False
         if self.path is None:
@@ -310,8 +333,8 @@ class NavigationNode(Node):
     def loop(self):
         cmd = Twist()   # 기본값 = 정지
 
-        if self.robot is None:
-            self.publish(cmd, 'NO_POSE')       # 위치를 모르면 걷지 않는다
+        if self.robot is None or (self.require_localized and not self.localized):
+            self.publish(cmd, 'NO_POSE')       # 위치를 모르거나 못 믿으면 걷지 않는다
             return
         if self.goal is None:
             self.publish(cmd, 'IDLE')
@@ -350,21 +373,28 @@ class NavigationNode(Node):
         self.publish_debug(None if c.arrived else c.carrot)
 
     def publish(self, cmd, status):
-        self.cmd_pub.publish(cmd)
-        self.status_pub.publish(String(data=status))
-        # 남은 거리: 가는 중(기다리는 중 포함)이면 경로 길이, 도착이면 0, 목표·경로·위치가 없으면 -1
+        # 목표가 없을 때(IDLE)는 정지 명령을 한 번만 보내고 조용히 있음
+        # (Vision이 공 앞에서 보행 명령을 보낼 때 우리 "0"과 섞이지 않게)
+        if not (status == 'IDLE' and self.last_status == 'IDLE'):
+            self.cmd_pub.publish(cmd)
+            fp = self.follower.p
+            x, y, yaw, flag = to_walk(cmd.linear.x, cmd.linear.y, cmd.angular.z,
+                                      fp.max_move, fp.max_side_near, fp.max_turn, *self.ik_max)
+            self.walk_pub.publish(Master2IkMsg(x_length=x, y_length=y, yaw=yaw, flag=flag))
+        # 도착 예상 시간: 가는 중(기다리는 중 포함)이면 남은 경로 길이 / 최대 앞걸음 속도
+        #                  도착 0, 대기 0, 길 없음·위치 모름 -1
         if status in ('MOVING', 'WAITING'):
-            remain = self.remain
-        elif status == 'ARRIVED':
-            remain = 0.0
+            eta = self.remain / max(self.follower.p.max_move, 1e-3)
+        elif status in ('ARRIVED', 'IDLE'):
+            eta = 0.0
         else:
-            remain = -1.0
-        self.remain_pub.publish(Float32(data=float(remain)))
+            eta = -1.0
+        self.feedback_pub.publish(NavFeedback(status=STATUS_CODE[status], eta_seconds=float(eta)))
         if status != self.last_status:      # 상태가 바뀔 때만 화면에 출력
             self.get_logger().info(f'상태: {status}')
             self.last_status = status
 
-    # ---------------- RViz2 표시 ----------------
+    # ---------------- 화면 표시 (UI) ----------------
     def publish_path(self):
         msg = Path()
         msg.header.frame_id = FRAME

@@ -3,7 +3,7 @@
 <package format="3">
   <name>robit_navigation</name>
   <version>0.0.1</version>
-  <description>ROBIT 21기 휴머노이드 내비게이션: A-star 장애물 회피 + PID 경로 추종 + RViz2 시뮬레이션</description>
+  <description>ROBIT 21기 휴머노이드 내비게이션: A-star 장애물 회피 + PID 경로 추종 + 시뮬레이션 UI</description>
   <maintainer email="todo@todo.todo">cgjeong77</maintainer>
   <license>MIT</license>
 
@@ -15,8 +15,8 @@
   <exec_depend>visualization_msgs</exec_depend>
   <exec_depend>launch</exec_depend>
   <exec_depend>launch_ros</exec_depend>
-  <exec_depend>rviz2</exec_depend>
   <exec_depend>python_qt_binding</exec_depend>
+  <exec_depend>humanoid_interfaces</exec_depend>
 
   <test_depend>python3-pytest</test_depend>
 

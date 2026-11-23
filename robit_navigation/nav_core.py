@@ -110,10 +110,17 @@ class ControllerParams:
     i_limit_turn: float = 0.3      # I가 낼 수 있는 최대 회전 속도 (rad/s)
     # 공통
     d_alpha: float = 0.5           # D 부드럽게 (0~1)
-    max_move: float = 0.3          # 최대 이동 속도 (m/s)
+    max_move: float = 0.3          # 최대 앞걸음 속도 (m/s)
     max_turn: float = 1.0          # 최대 회전 속도 (rad/s)
     tol_dist: float = 0.10         # 허용 거리 (m)
     tol_yaw: float = math.radians(10.0)   # 허용 각도 (rad)
+    # 앞걸음 위주 (휴머노이드는 옆걸음·뒷걸음이 느리고 잘 넘어짐)
+    turn_in_place: float = math.radians(30.0)   # 가려는 쪽이 이 각도보다 벗어나면 제자리 회전
+    walk_again: float = math.radians(15.0)      # 이 각도보다 작아지면 다시 걷기 (떨림 방지)
+    near_dist: float = 0.3         # 목표가 이 거리 안이면 마지막 방향 보면서 옆걸음으로 맞춤 (m)
+    max_side: float = 0.05         # 멀 때 옆걸음 최대 (m/s)
+    max_side_near: float = 0.15    # 가까울 때 옆걸음 최대 (m/s)
+    max_back: float = 0.05         # 뒷걸음 최대 (m/s)
 
     def move_pid(self):
         return Pid(self.kp_move, self.ki_move, self.kd_move, self.i_limit_move, self.d_alpha)
@@ -130,27 +137,94 @@ class Command:
     turn: float = 0.0      # 회전 속도 (rad/s), 반시계 +
     arrived: bool = False  # 도착했는지
     remain: float = 0.0    # 남은 거리 (m)
-    carrot: tuple = None   # 이번에 향한 임시 목표 (RViz 표시용)
+    carrot: tuple = None   # 이번에 향한 임시 목표 (화면 표시용)
+
+
+def to_walk(front, left, turn, max_move, max_side, max_turn, ik_max_x, ik_max_y, ik_max_yaw):
+    """
+    내 속도 -> 보행(master2ik) 값. 비율로 바꿈 (중간 프로젝트처럼 값을 직접 정해서 보내는 방식)
+      x_length = (앞 속도 / 최대 앞 속도) x 보행 x 최대값
+      y_length = (옆 속도 / 최대 옆 속도) x 보행 y 최대값
+      yaw      = (회전 속도 / 최대 회전 속도) x 보행 yaw 최대값
+      flag     = 하나라도 0이 아니면 1 (걷기), 다 0이면 0 (멈춤)
+    보행 최대값을 음수로 넣으면 방향이 반대가 됨 (보행 쪽 방향이 우리와 다를 때)
+    반환: (x_length, y_length, yaw, flag)
+    """
+    def ratio(v, vmax):
+        return clip(v / vmax, 1.0) if vmax > 0.0 else 0.0
+    x = round(ratio(front, max_move) * ik_max_x, 1)
+    y = round(ratio(left, max_side) * ik_max_y, 1)
+    yaw = round(ratio(turn, max_turn) * ik_max_yaw, 1)
+    flag = 1.0 if (x != 0.0 or y != 0.0 or yaw != 0.0) else 0.0
+    return x, y, yaw, flag
+
+
+class ForwardWalk:
+    """
+    앞걸음 위주로 한 점을 향해 걷기
+    - 그 점이 정면에서 turn_in_place 보다 벗어나 있으면: 제자리에서 돌기만 (앞·옆 0)
+    - walk_again 보다 정면에 가까워지면 다시 걷기 (두 값을 다르게 해서 경계에서 떨지 않게)
+    - 걸을 때: 앞 속도는 정면에서 벗어난 만큼 줄이고, 옆걸음은 max_side, 뒷걸음은 max_back 까지만
+    """
+
+    def __init__(self, params):
+        self.p = params
+        self.turning = False
+
+    def reset(self):
+        self.turning = False
+
+    def step(self, front, left, front_pid, left_pid, turn_pid, dt, use_i):
+        """front, left: 그 점의 로봇 기준 위치. 반환: (앞, 왼쪽, 회전) 속도"""
+        p = self.p
+        err = math.atan2(left, front)                 # 그 점이 정면에서 몇 도 벗어났나
+        if not self.turning and abs(err) > p.turn_in_place:
+            self.turning = True
+        elif self.turning and abs(err) < p.walk_again:
+            self.turning = False
+        turn = turn_pid.update(err, dt, False, p.max_turn)
+        if self.turning:
+            front_pid.reset()                         # 서 있는 동안 I가 쌓이지 않게
+            left_pid.reset()
+            return 0.0, 0.0, turn
+        scale = max(0.0, 1.0 - abs(err) / p.turn_in_place)   # 정면에서 벗어날수록 천천히
+        f = max(-p.max_back, front_pid.update(front, dt, use_i, p.max_move) * scale)
+        l = left_pid.update(left, dt, use_i, p.max_side)
+        return f, l, turn
 
 
 class GoalController:
-    """목표 위치까지 PID로 이동하고 도착을 판단"""
+    """
+    목표 위치까지 PID로 이동하고 도착을 판단
+      FAR   (near_dist 보다 멂): 앞걸음 위주로 목표 점을 향해 걷기
+      NEAR  (near_dist 안)     : 마지막 방향으로 몸을 돌리면서 옆걸음·작은 뒷걸음으로 위치 맞추기
+      ALIGN (위치 도착)         : 제자리에서 마지막 방향 맞추기
+    """
 
     def __init__(self, params=None):
         self.p = params or ControllerParams()
         self.front_pid = self.p.move_pid()
         self.left_pid = self.p.move_pid()
         self.turn_pid = self.p.turn_pid()
-        self.mode = None    # 'APPROACH' 다가가는 중 / 'ALIGN' 제자리에서 방향 맞추는 중
+        self.walk = ForwardWalk(self.p)
+        self.mode = None
 
     def reset(self):
         self.front_pid.reset()
         self.left_pid.reset()
         self.turn_pid.reset()
+        self.walk.reset()
         self.mode = None
+
+    def set_mode(self, mode):
+        if self.mode != mode:
+            self.turn_pid.reset()     # 회전 오차의 뜻이 바뀌므로 초기화
+            self.walk.reset()
+            self.mode = mode
 
     def step(self, robot, goal, dt):
         """robot, goal: (x, y, yaw)  [m, m, rad]"""
+        p = self.p
         gx, gy, gyaw = goal
         cmd = Command(carrot=(gx, gy))
 
@@ -163,29 +237,28 @@ class GoalController:
         final_turn = normalize_angle(gyaw - robot[2])
 
         # 도착 판단: 거리와 방향 둘 다 허용 범위 안
-        if dist < self.p.tol_dist and abs(final_turn) < self.p.tol_yaw:
+        if dist < p.tol_dist and abs(final_turn) < p.tol_yaw:
             cmd.arrived = True        # 정지 명령 (front, left, turn 모두 0)
             self.reset()
             return cmd
 
-        if dist >= self.p.tol_dist:
-            # 아직 멀다: 목표 쪽으로 몸을 돌리면서 걸어간다
-            if self.mode != 'APPROACH':
-                self.turn_pid.reset()     # 회전 오차의 뜻이 바뀌므로 초기화
-                self.mode = 'APPROACH'
-            heading_err = math.atan2(left, front)     # 목표가 몇 도 방향인가
-            # 이동: PID (I로 미끄러짐 때문에 남는 거리까지 없앰)
-            cmd.front = self.front_pid.update(front, dt, True, self.p.max_move)
-            cmd.left = self.left_pid.update(left, dt, True, self.p.max_move)
-            # 회전: 목표 쪽 바라보기 (P + D, 가까워지면 방향이 크게 흔들리므로 I는 안 씀)
-            cmd.turn = self.turn_pid.update(heading_err, dt, False, self.p.max_turn)
+        if dist >= p.near_dist:
+            # 멀다: 목표 쪽으로 몸을 돌리고 앞으로 (I로 미끄러짐 때문에 남는 거리까지 없앰)
+            self.set_mode('FAR')
+            cmd.front, cmd.left, cmd.turn = self.walk.step(
+                front, left, self.front_pid, self.left_pid, self.turn_pid, dt, True)
+        elif dist >= p.tol_dist:
+            # 가깝다: 마지막 방향을 보면서 옆걸음·작은 뒷걸음으로 위치 맞추기
+            self.set_mode('NEAR')
+            cmd.front = max(-p.max_back, self.front_pid.update(front, dt, True, p.max_move))
+            cmd.left = self.left_pid.update(left, dt, True, p.max_side_near)
+            cmd.turn = self.turn_pid.update(final_turn, dt, False, p.max_turn)
         else:
-            # 위치는 도착: 제자리에서 최종 방향만 맞춘다
+            # 위치는 도착: 제자리에서 최종 방향만 맞춘다 (I로 남는 각도까지 없앰)
             if self.mode != 'ALIGN':
                 self.reset()
                 self.mode = 'ALIGN'
-            # 회전: PID (I로 남는 각도까지 없앰)
-            cmd.turn = self.turn_pid.update(final_turn, dt, True, self.p.max_turn)
+            cmd.turn = self.turn_pid.update(final_turn, dt, True, p.max_turn)
         return cmd
 
 
@@ -193,6 +266,7 @@ class PathFollower:
     """
     경로 위 조금 앞선 점(Carrot, 당근)을 따라가기
     - 가장 가까운 경로 점을 찾고, 거기서 carrot_points개 앞의 점을 임시 목표로 삼는다
+    - 당근 쪽으로 앞걸음 위주로 걷는다 (많이 벗어나 있으면 먼저 제자리 회전)
     - 당근이 경로 끝에 닿으면 GoalController로 최종 목표에 정확히 도착하고 방향을 맞춘다
     """
 
@@ -202,6 +276,7 @@ class PathFollower:
         self.front_pid = self.p.move_pid()       # 경로 중간: 당근 따라가기 (I 안 씀)
         self.left_pid = self.p.move_pid()
         self.turn_pid = self.p.turn_pid()
+        self.walk = ForwardWalk(self.p)
         self.carrot_points = carrot_points       # 몇 개 앞의 점을 당근으로 쓸지 (m가 아니라 개수)
         self.on_carrot = False
 
@@ -210,6 +285,7 @@ class PathFollower:
         self.front_pid.reset()
         self.left_pid.reset()
         self.turn_pid.reset()
+        self.walk.reset()
         self.on_carrot = False
 
     def step(self, robot, path, goal, dt):
@@ -217,18 +293,14 @@ class PathFollower:
         rx, ry, _ = robot
         n = len(path)
 
-        # 1. 가장 가까운 경로 점 찾기
+        # 1. 가장 가까운 경로 점 찾기, 남은 경로 길이
         nearest = min(range(n), key=lambda k: math.hypot(path[k][0] - rx, path[k][1] - ry))
-
-        # 남은 경로 길이
-        remain = math.hypot(path[nearest][0] - rx, path[nearest][1] - ry)
-        for k in range(nearest, n - 1):
-            remain += math.hypot(path[k + 1][0] - path[k][0], path[k + 1][1] - path[k][1])
+        remain = path_remaining(path, robot)
 
         # 2. 몇 개 앞의 점 = 당근
         c = nearest + self.carrot_points
         if c >= n - 1:
-            # 당근이 경로 끝에 닿음 -> 최종 목표로 정확히 이동 + 방향 맞추기 (PID)
+            # 당근이 경로 끝에 닿음 -> 최종 목표로 정확히 이동 + 방향 맞추기
             if self.on_carrot:
                 self.final.reset()
                 self.on_carrot = False
@@ -236,18 +308,14 @@ class PathFollower:
             cmd.remain = remain
             return cmd
 
-        # 3. 당근을 로봇 기준으로 바꿔서 따라가기 (P + D)
+        # 3. 당근을 로봇 기준으로 바꿔서 앞걸음 위주로 따라가기 (P + D)
         #    당근은 항상 조금 앞에 있어서 오차가 0이 되지 않으므로 I는 쓰지 않음
         if not self.on_carrot:
             self.front_pid.reset()
             self.left_pid.reset()
             self.turn_pid.reset()
+            self.walk.reset()
             self.on_carrot = True
         front, left = field_to_robot(robot, path[c][0], path[c][1])
-        return Command(
-            front=self.front_pid.update(front, dt, False, self.p.max_move),
-            left=self.left_pid.update(left, dt, False, self.p.max_move),
-            turn=self.turn_pid.update(math.atan2(left, front), dt, False, self.p.max_turn),
-            remain=remain,
-            carrot=tuple(path[c]),
-        )
+        f, l, t = self.walk.step(front, left, self.front_pid, self.left_pid, self.turn_pid, dt, False)
+        return Command(front=f, left=l, turn=t, remain=remain, carrot=tuple(path[c]))

@@ -18,15 +18,14 @@ from robit_navigation.ball_approach import plan_path
 from robit_navigation.nav_core import normalize_angle
 
 
-def plan_with_teammate(planner, start, goal, cones, mate, mate_radius, ball=None,
-                       ball_radius=0.07, approach_margin=0.2):
+def plan_with_teammate(planner, start, goal, cones, mate, mate_radius, ball=None, ball_radius=0.07):
     """다른 로봇을 꼬깔처럼 넣어서 경로 계획. 다른 로봇 때문에 길이 없으면 빼고 다시"""
     if mate is not None:
         path = plan_path(planner, start, goal, list(cones) + [(mate[0], mate[1], mate_radius)],
-                         ball, ball_radius, approach_margin)
+                         ball, ball_radius)
         if path is not None:
             return path
-    return plan_path(planner, start, goal, cones, ball, ball_radius, approach_margin)
+    return plan_path(planner, start, goal, cones, ball, ball_radius)
 
 
 def ahead(robot, toward, point, half_angle):

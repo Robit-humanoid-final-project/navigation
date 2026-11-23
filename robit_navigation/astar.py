@@ -112,8 +112,10 @@ class GridPlanner:
         """
         s = self.to_cell(*start_xy)
         g = self.to_cell(*goal_xy)
-        if not self.inside(*s) or not self.inside(*g):
-            return None
+        # 출발점이 필드 밖이면 (세팅 위치는 라인보다 뒤에 둠) 가장 가까운 필드 안 칸에서 시작
+        s = (min(max(s[0], 0), self.nx - 1), min(max(s[1], 0), self.ny - 1))
+        if not self.inside(*g):
+            return None              # 목표가 필드 밖
         if self.blocked[g[0]][g[1]]:
             return None              # 목표가 꼬깔 범위 안 -> 갈 수 없음
 
