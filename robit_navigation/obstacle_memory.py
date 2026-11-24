@@ -2,7 +2,6 @@
 꼬깔 기억하기 (ROS2와 상관없는 순수 계산)
 
 Localization(world_model)은 지금 카메라에 보이는 꼬깔만 필드 기준으로 알려준다.
-(Vision을 직접 받으면 로봇 기준(앞, 왼쪽)으로 옴)
 그대로 쓰면 로봇이 고개를 돌리거나 꼬깔을 지나치는 순간 꼬깔이 사라져서
 A-star가 그쪽으로 길을 낼 수 있다. 그래서:
   1. 받은 꼬깔을 필드 기준으로 바꿔서 기억한다 (꼬깔은 경기 중 움직이지 않음)
@@ -16,7 +15,7 @@ A-star가 그쪽으로 길을 낼 수 있다. 그래서:
 import math
 from dataclasses import dataclass
 
-from robit_navigation.nav_core import field_to_robot, robot_to_field
+from robit_navigation.nav_core import field_to_robot
 
 
 @dataclass
@@ -54,15 +53,6 @@ class ObstacleMemory:
     def confirmed(self):
         """진짜로 인정된 꼬깔 [(x, y), ...] (필드 기준)"""
         return [(t['x'], t['y']) for t in self.tracks if t['hits'] >= self.p.min_hits]
-
-    def update(self, robot, seen, now):
-        """
-        로봇 기준으로 받은 경우 (Vision 직접)
-        robot: 지금 내 위치 (x, y, yaw), seen: 이번에 보인 꼬깔 [(앞, 왼쪽), ...] (로봇 기준)
-        now: 지금 시간 (s)
-        반환: 진짜로 인정된 꼬깔 목록이 바뀌었으면 True (경로를 다시 짜야 함)
-        """
-        return self.update_field(robot, [robot_to_field(robot, f, l) for f, l in seen], now)
 
     def update_field(self, robot, seen, now):
         """

@@ -12,7 +12,7 @@ Ubuntu 24.04 + ROS2 Jazzy 기준.
 | `robit_navigation/astar.py` | ✅ | 꼬깔 부풀리기 + 격자 A-star 경로 계획 |
 | `robit_navigation/ball_approach.py` | ✅ | 공을 장애물로 피하는 경로, 공 앞 자리 계산 |
 | `robit_navigation/teammate.py` | ✅ | 우리 팀 다른 로봇 피하기: 움직이는 꼬깔 취급, 양보, 안전 정지 |
-| `robit_navigation/obstacle_memory.py` | ✅ | Vision이 준 꼬깔(로봇 기준)을 필드 기준으로 바꿔서 기억 |
+| `robit_navigation/obstacle_memory.py` | ✅ | world_model 꼬깔(필드 기준)을 기억, 유령 꼬깔 지우기 |
 | `robit_navigation/navigation_node.py` | ✅ | ROS2 노드: 위치·목표·꼬깔 받기 → 경로 계획 → 걸음 명령·상태 보내기 |
 | `robit_navigation/nav_gui_node.py` | ❌ 연습용 | Navigation UI (Localization UI와 같은 배치): 필드 보기, 위치 입력, 튜닝 |
 | `robit_navigation/fake_robot_node.py` | ❌ 연습용 | 가짜 로봇 + 가짜 Localization (Walking, Localization, Vision 흉내) + 화면 그림 |
@@ -157,8 +157,8 @@ UI에서 **Robot 1 / Robot 2** 버튼으로 조작할 로봇을 고름 (노란 �
 
 - 공은 꼬깔처럼 장애물로 피함 (공 주변 0.37m 안으로 안 들어감 = 공을 안 밀음). 목표가 그 안이면 `BLOCKED`
 - 내비게이션은 **공 앞**(공에서 찰 방향 반대로 "공 앞 거리" 뒤, 찰 방향 바라보기)까지만 데려감
-- 그 안쪽에서 골대 방향 맞추기·킥 위치 맞추기는 **Vision**이 맡음 (그동안 Taskplanner가 `nav_enable = false`로 내비게이션을 멈춤)
-- 목표가 없을 때(IDLE)는 정지 명령을 한 번만 보내고 조용히 있음 (Vision 명령과 안 섞이게)
+- 그 안쪽 킥 정렬은 **Taskplanner**가 맡음 (그동안 Taskplanner가 `nav_enable = false`로 내비게이션을 멈춤)
+- 목표가 없을 때(IDLE)는 정지 명령을 한 번만 보내고 조용히 있음 (킥 정렬 명령과 안 섞이게)
 - UI: **공 앞 거리**(기본 0.5m, 실험하면서 정하기) + **공 앞으로** 버튼 = 고른 로봇이 상대 골대 쪽을 보고 공 앞에 섬
 
 - UI에서는 공 피하기가 항상 켜짐 (끄고 켜는 건 Taskplanner가 `NavCommand.avoid_ball`로)

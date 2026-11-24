@@ -51,18 +51,12 @@ def test_pid():
 def test_obstacle_memory():
     mem = ObstacleMemory()
     r = (0, 0, 0)
-    assert not mem.update(r, [(1.0, 0.0)], 0.0) and mem.confirmed() == []   # 한 번은 인정 안 함
-    assert mem.update(r, [(1.02, 0.01)], 0.1) and len(mem.confirmed()) == 1  # 두 번 보면 인정
-    mem.update((0, 0, R(180)), [], 10.0)
+    assert not mem.update_field(r, [(1.0, 0.0)], 0.0) and mem.confirmed() == []   # 한 번은 인정 안 함
+    assert mem.update_field(r, [(1.02, 0.01)], 0.1) and len(mem.confirmed()) == 1  # 두 번 보면 인정
+    mem.update_field((0, 0, R(180)), [], 10.0)
     assert len(mem.confirmed()) == 1            # 뒤로 돌아서 안 보여도 기억
-    mem.update(r, [], 10.0)
+    mem.update_field(r, [], 10.0)
     assert mem.confirmed() == []                # 보여야 하는데 계속 안 보이면 지움
-
-    mem2 = ObstacleMemory()
-    mem2.update((0, 0, R(90)), [(1.0, 0.0)], 0.0)    # 위를 보면서 앞 1m
-    mem2.update((0, 0, 0), [(0.0, 1.0)], 0.1)        # 오른쪽(+x)을 보면서 왼쪽 1m
-    c = mem2.confirmed()
-    assert len(c) == 1 and close(c[0][0], 0.0, 0.01) and close(c[0][1], 1.0, 0.01)   # 같은 꼬깔
 
 
 def test_path_remaining():

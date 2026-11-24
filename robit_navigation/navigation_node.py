@@ -3,7 +3,7 @@
 
 받는 토픽 (팀 메시지 humanoid_interfaces):
   nav_command    humanoid_interfaces/NavCommand   <- Taskplanner
-                 nav_enable        : true일 때만 걸음. false = 멈추고 IDLE (Vision이 공 앞을 맡을 때 등)
+                 nav_enable        : true일 때만 걸음. false = 멈추고 IDLE (Taskplanner가 킥 정렬할 때 등)
                  x, y, theta       : 목표 (필드 기준, m, rad)
                  pos_tolerance     : 이 거리 안이면 도착 (m), 0 이하면 tol_dist 사용
                  theta_tolerance   : 이 각도 안이면 도착 (rad), 0 이하면 tol_yaw_deg 사용
@@ -31,11 +31,11 @@
                  (ik_max_x, ik_max_y, ik_max_yaw 는 임시 값: 보행 담당 답 오면 바꾸기)
   nav_cmd        geometry_msgs/Twist   같은 명령을 m/s, rad/s 로 (가짜 로봇·UI용)
                  linear.x 앞, linear.y 왼쪽 [m/s], angular.z 회전 [rad/s]
-  master2ik, nav_cmd 둘 다: IDLE이 되면 0을 한 번만 보내고 그다음엔 안 보냄 (Vision 명령과 안 섞이게)
+  master2ik, nav_cmd 둘 다: IDLE이 되면 0을 한 번만 보내고 그다음엔 안 보냄 (킥 정렬 명령과 안 섞이게)
   nav_path       nav_msgs/Path                    A-star 경로 (화면 표시용)
   nav_debug      visualization_msgs/MarkerArray   목표, 꼬깔·공 위험 범위, 당근, 상태 글자 (화면 표시용)
 
-공 바로 앞에서 골대 방향 맞추기·킥 위치 맞추기는 Vision이 맡음 (그동안 Taskplanner가 nav_enable = false)
+공 바로 앞에서 킥 위치 맞추기(킥 정렬)는 Taskplanner가 맡음 (그동안 nav_enable = false)
 
 이동, 회전 모두 PID 제어 (ki, kd = 0 이면 P만)
 튜닝 값은 실행 중에도 바꿀 수 있음 (빌드 다시 안 해도 됨):
@@ -387,7 +387,7 @@ class NavigationNode(Node):
 
     def publish(self, cmd, status):
         # 목표가 없을 때(IDLE)는 정지 명령을 한 번만 보내고 조용히 있음
-        # (Vision이 공 앞에서 보행 명령을 보낼 때 우리 "0"과 섞이지 않게)
+        # (Taskplanner가 킥 정렬하면서 master2ik를 보낼 때 우리 "0"과 섞이지 않게)
         if not (status == 'IDLE' and self.last_status == 'IDLE'):
             self.cmd_pub.publish(cmd)
             fp = self.follower.p

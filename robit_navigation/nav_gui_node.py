@@ -5,7 +5,7 @@
   오른쪽 위  로봇 기준 화면: 로봇이 바라보는 방향이 위쪽, 걸음 명령 화살표, 상태
   왼쪽 아래  조작할 로봇 고르기 (Robot 1 / Robot 2)
             로봇 / 목표 / 공 위치 입력 + Set, Go, Reset 버튼
-  오른쪽 아래 튜닝 탭 (PID, 경로, 가짜 로봇) + Text (기록)
+  오른쪽 아래 튜닝 탭 (PID, 경로) + Text (기록)
 
 필드 위 마우스:
   왼쪽 클릭 후 끌기          = 목표 (끈 방향 = 도착 후 바라볼 방향)
@@ -15,12 +15,12 @@
 로봇마다 (robot1, robot2):
   받는 토픽:  /robotN/robot_pose, /robotN/nav_path, /robotN/nav_feedback (NavFeedback), /robotN/nav_cmd,
               /robotN/nav_markers (가짜 로봇 그림), /robotN/nav_debug (내비게이션 그림)
-  보내는 토픽: /robotN/nav_command (NavCommand, Taskplanner 대신: 목표, Stop, Ready, 공 피하기),
+  보내는 토픽: /robotN/nav_command (NavCommand, Taskplanner 대신: 목표, Stop, Ready. 공 피하기는 항상 켬),
               /robotN/initialpose (로봇 옮기기)
 같이 쓰는 토픽: /ball_pose (받음), /clicked_point (공 옮기기, 보냄)
 공 앞으로 버튼: 고른 로봇에게 "공 앞" 목표를 보냄
   공 앞 = 공에서 상대 골대(오른쪽, x = +4.5) 반대쪽으로 "공 앞 거리"만큼 뒤, 골대 쪽 바라보기
-  (그 안쪽에서 골대 방향 맞추기·킥은 Vision이 맡음)
+  (그 안쪽 킥 정렬·킥은 Taskplanner·Vision이 맡음)
 튜닝 값은 ROS2 파라미터로 바꿈 (ros2 param set 과 같음)
 
 실제 로봇 모드 (real_robot = True, robot.launch.py 에서 켬):
@@ -45,9 +45,9 @@ from humanoid_interfaces.msg import NavCommand, NavFeedback, WorldModel
 from visualization_msgs.msg import Marker, MarkerArray
 
 from python_qt_binding.QtCore import QPointF, QRectF, Qt, QTimer
-from python_qt_binding.QtGui import QBrush, QColor, QFont, QPainter, QPen, QPolygonF
+from python_qt_binding.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
 from python_qt_binding.QtWidgets import (
-    QApplication, QCheckBox, QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
+    QApplication, QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QMainWindow, QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
 
 from robit_navigation.ball_approach import ball_front_goal
@@ -241,12 +241,6 @@ class NavGuiNode(Node):
             self.command[n].forbid_right_half = bool(on)
             self.publish_command(n)
         self.log('Ready: RIGHT 진영 금지' if on else 'Playing: RIGHT 진영 금지 해제')
-
-    def send_avoid_ball(self, on, n=None):
-        n = n or self.selected
-        self.command[n].avoid_ball = bool(on)
-        self.publish_command(n)
-        self.log(f'{n} 공 피하기 {"켬" if on else "끔"}')
 
     def send_cancel(self, n=None):
         """멈추기: nav_enable = false"""
@@ -736,7 +730,7 @@ class MainWindow(QMainWindow):
             g.addWidget(reset, 1, 5)
             g.addWidget(stop, 2, 5)
 
-        front = QHBoxLayout()                 # 공 앞으로 가기 (그 안쪽은 Vision이 맡음)
+        front = QHBoxLayout()                 # 공 앞으로 가기 (그 안쪽 킥 정렬은 Taskplanner가 맡음)
         front.addWidget(self.tag('공 앞 거리 (m)'))
         self.front_dist = self.spin(0.3, 2.0, 0.05, 2, 0.5)
         front.addWidget(self.front_dist)
