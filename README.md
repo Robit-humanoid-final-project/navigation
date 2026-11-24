@@ -67,8 +67,8 @@ ros2 launch robit_navigation robot.launch.py gui:=false       # UI 없이 (Taskp
 ```
 
 - 토픽 이름이 팀 코드와 같음: `nav_command`, `world_model`, `nav_feedback`, `master2ik`
-- UI는 "실제 로봇 모드": 로봇·공·꼬깔은 world_model 값, 목표 끌기·Go·Ready·공 앞으로·Stop 가능
-- 로봇·공 옮기기, 모두 세팅 위치로, Reset은 숨김 (손으로 놓기), 마우스는 왼쪽 끌기(목표)만
+- UI는 "실제 로봇 모드": 로봇·공·꼬깔은 world_model 값, 목표 클릭·Go·Ready·Playing·공 앞으로·Stop 가능
+- 로봇·공 옮기기, 모두 세팅 위치로, Reset은 숨김 (손으로 놓기), 마우스는 왼쪽 클릭·끌기(목표)만
 - **UI를 닫으면 로봇 멈춤** (nav_enable = false)
 - 내비게이션만 Ctrl+C로 끄면 보행이 마지막 명령으로 계속 걸을 수 있음 → 먼저 Stop 또는
   `ros2 topic pub --once nav_command humanoid_interfaces/msg/NavCommand "{nav_enable: false}"`
@@ -94,7 +94,9 @@ ros2 launch robit_navigation robot.launch.py gui:=false       # UI 없이 (Taskp
 | 왼쪽 아래 | 조작할 로봇 고르기 (Robot 1 / 2), Robot / Goal / Ball / Ready 위치 입력 → Set, Go / Stop (목표 취소, 그 자리에 멈춤) / Reset (목표 취소 + 세팅 위치로) / 공 앞 거리 + 공 앞으로 |
 | 오른쪽 아래 | 튜닝 탭 (PID, Path): 값 넣고 Apply, Read = 지금 값 읽기 / Text = 기록 |
 
-필드 위 마우스: 왼쪽 클릭 후 끌기 = 목표, 오른쪽 클릭 = 공 옮기기, Ctrl + 왼쪽 끌기 = 로봇 옮기기
+필드 위 마우스: 왼쪽 클릭 = 목표 (가던 방향 그대로 바라봄), 왼쪽 끌기 = 목표 + 바라볼 방향, 오른쪽 클릭 = 공 옮기기, Ctrl + 왼쪽 끌기 = 로봇 옮기기
+
+게임 상태: **Ready** / **Playing** 버튼 (켜진 쪽이 색으로 보이고 필드 왼쪽 위에도 표시). 처음 켜면 Playing이라 바로 목표를 줄 수 있음
 
 ## 꼬깔 기억
 
@@ -123,7 +125,7 @@ Localization(`world_model`)은 지금 카메라에 보이는 꼬깔만 필드 �
 1. **모두 세팅 위치로**: 두 로봇을 세팅 위치(LEFT 진영 터치라인)에 놓음
 2. **Ready**: RIGHT 진영 금지를 켜고, 두 로봇이 각자 **Ready 위치**까지 스스로 걸어가서 멈춤
 3. 둘 다 도착하면 Text에 **준비 완료**
-4. Ready 버튼을 끄면 Playing (RIGHT 진영 제한 해제)
+4. Playing 버튼을 누르면 경기 시작 (RIGHT 진영 제한 해제)
 
 세팅 위치는 규정 그림대로 LEFT 진영 위·아래 라인의 절반 지점, 라인보다 뒤 (-2.25, ±3.1). 출발점이 필드 밖이어도 안쪽으로 들어와서 감
 

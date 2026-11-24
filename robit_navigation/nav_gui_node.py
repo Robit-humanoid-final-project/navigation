@@ -8,7 +8,8 @@
   오른쪽 아래 튜닝 탭 (PID, 경로) + Text (기록)
 
 필드 위 마우스:
-  왼쪽 클릭 후 끌기          = 목표 (끈 방향 = 도착 후 바라볼 방향)
+  왼쪽 클릭                 = 목표 (도착 후 가던 방향 그대로 바라봄)
+  왼쪽 클릭 후 끌기          = 목표 + 도착 후 바라볼 방향 (끈 방향)
   오른쪽 클릭               = 공 옮기기
   Ctrl + 왼쪽 클릭 후 끌기   = 로봇 옮기기
 
@@ -83,6 +84,8 @@ PATH_PARAMS = [
     ('boundary_margin', '선 안쪽 여유 m', 0, 1, 0.05, 2), ('center_margin', '가운데선 여유 m', 0, 1, 0.05, 2),
 ]
 
+READY_ON = 'background: #c62828; border: 3px solid #ffe14d;'    # Ready 켜짐 (빨강)
+PLAY_ON = 'background: #2e7d32; border: 3px solid #ffe14d;'     # Playing 켜짐 (초록)
 STYLE = """
 QWidget { background: #55575b; color: #f0f0f0; font-size: 13px; }
 QPushButton { background: #2e3337; border: none; border-radius: 8px; padding: 8px 14px; color: #ffffff; }
@@ -361,8 +364,11 @@ class FieldView(QWidget):
             return
         mode, (x0, y0), (x1, y1) = self.drag
         self.drag = None
-        if math.hypot(x1 - x0, y1 - y0) > 0.05:
+        if math.hypot(x1 - x0, y1 - y0) > 0.15:
             yaw = math.atan2(y1 - y0, x1 - x0)          # 끈 방향
+        elif mode == 'goal' and self.node.robot is not None:
+            rx, ry, _ = self.node.robot                 # 클릭만: 로봇 -> 목표 방향 (도착해서 안 돌아도 됨)
+            yaw = math.atan2(y0 - ry, x0 - rx)
         else:
             yaw = 0.0
         if mode == 'goal':
@@ -414,8 +420,13 @@ class FieldView(QWidget):
         p.setPen(QColor(255, 255, 255, 200))
         p.setFont(QFont('Sans', 9))
         p.drawText(8, self.height() - 8,
-                   '실제 로봇 모드   왼쪽 끌기: 목표' if self.node.real else
-                   '왼쪽 끌기: 목표   오른쪽 클릭: 공   Ctrl+왼쪽 끌기: 로봇')
+                   '실제 로봇 모드   클릭: 목표   끌기: 목표 + 바라볼 방향' if self.node.real else
+                   '클릭: 목표   끌기: 목표 + 바라볼 방향   오른쪽 클릭: 공   Ctrl+끌기: 로봇')
+        # 지금 게임 상태 (왼쪽 위)
+        ready = self.win.ready_btn.isChecked()
+        p.setPen(QColor('#ff5a5a') if ready else QColor('#ffffff'))
+        p.setFont(QFont('Sans', 14, QFont.Bold))
+        p.drawText(10, 26, 'READY (RIGHT 진영 금지)' if ready else 'PLAYING')
         p.end()
 
     def draw_field(self, p, s):
@@ -686,10 +697,17 @@ class MainWindow(QMainWindow):
         setting.clicked.connect(self.on_all_setting)
         setting.setVisible(not self.node.real)      # 실제 로봇은 손으로 놓기
         pick.addWidget(setting)
-        self.ready_btn = QPushButton('Ready')
+        self.ready_btn = QPushButton('Ready')        # 준비 위치로 + RIGHT 진영 금지
         self.ready_btn.setCheckable(True)
         self.ready_btn.toggled.connect(self.on_ready)
         pick.addWidget(self.ready_btn)
+        self.play_btn = QPushButton('Playing')      # 바로 경기 상태 (RIGHT 진영 제한 없음), 처음 켜면 이 상태
+        self.play_btn.setCheckable(True)
+        self.play_btn.setChecked(True)
+        self.play_btn.setStyleSheet(PLAY_ON)
+        self.play_btn.clicked.connect(lambda: self.ready_btn.setChecked(False) if self.ready_btn.isChecked()
+                                      else self.play_btn.setChecked(True))
+        pick.addWidget(self.play_btn)
         pick.addStretch()
 
         g = QGridLayout()
@@ -847,8 +865,9 @@ class MainWindow(QMainWindow):
         Ready 켜기: RIGHT 진영 금지 + 두 로봇을 각자 준비 위치로 보냄 (규정: 스스로 걸어가서 정지)
         둘 다 도착하면 Text에 '준비 완료'. 끄기 = Playing (RIGHT 진영 제한 해제)
         """
-        self.ready_btn.setStyleSheet('background: #c62828; border: 3px solid #ffe14d;' if on else '')
-        self.ready_btn.setText('Ready 켜짐 (끄면 Playing)' if on else 'Ready')
+        self.ready_btn.setStyleSheet(READY_ON if on else '')
+        self.play_btn.setChecked(not on)
+        self.play_btn.setStyleSheet('' if on else PLAY_ON)
         self.node.send_left_only(on)
         if not on:
             self.ready_wait = None
