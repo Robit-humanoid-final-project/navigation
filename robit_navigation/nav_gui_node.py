@@ -26,7 +26,7 @@
 실제 로봇 모드 (real_robot = True, robot.launch.py 에서 켬):
   토픽에 이름이 안 붙음 (nav_command, nav_feedback, world_model ...) = 팀 코드와 같은 이름
   로봇 위치·공·꼬깔은 Localization 의 world_model 에서 받음 (가짜 로봇 없음)
-  로봇 옮기기, 공 옮기기, 모두 세팅 위치로, Reset 은 안 됨 (실제 로봇은 손으로 놓기)
+  로봇·공 옮기기 줄, 모두 세팅 위치로, Reset 은 숨김 (실제 로봇은 손으로 놓기), 마우스는 목표 끌기만
   UI를 닫으면 nav_enable = false 를 보내서 로봇을 멈춤
 """
 import math
@@ -39,6 +39,7 @@ from rclpy.node import Node
 from rclpy.parameter import Parameter, parameter_value_to_python
 from rclpy.parameter_client import AsyncParameterClient
 from geometry_msgs.msg import Point, PointStamped, Pose2D, PoseWithCovarianceStamped, Twist
+from std_msgs.msg import Empty
 from nav_msgs.msg import Path
 from humanoid_interfaces.msg import NavCommand, NavFeedback, WorldModel
 from visualization_msgs.msg import Marker, MarkerArray
@@ -138,7 +139,7 @@ class NavGuiNode(Node):
         self.seen_cones = []       # 실제 로봇 모드: world_model 에서 지금 보이는 꼬깔 [(x, y)]
         self.markers = {}          # (로봇, 토픽, ns, id) -> Marker
         self.log = None            # 화면 기록 함수 (창에서 연결)
-        self.nav_pub, self.init_pub, self.params = {}, {}, {}
+        self.nav_pub, self.init_pub, self.params, self.clear_pub = {}, {}, {}, {}
         # 로봇마다 Taskplanner 대신 보내는 NavCommand 내용 (바뀔 때마다 다시 보냄)
         self.command = {n: NavCommand(nav_enable=False, avoid_ball=True) for n in self.names}
 
@@ -156,6 +157,7 @@ class NavGuiNode(Node):
             self.create_subscription(MarkerArray, t + 'nav_debug',
                                      lambda m, n=n: self.on_markers(n, 'nav', m), 10)
             self.nav_pub[n] = self.create_publisher(NavCommand, t + 'nav_command', 10)
+            self.clear_pub[n] = self.create_publisher(Empty, t + 'nav_clear_cones', 10)
             self.init_pub[n] = self.create_publisher(PoseWithCovarianceStamped, t + 'initialpose', 10)
             for kind in ('navigation_node',):
                 self.params[(n, kind)] = AsyncParameterClient(self, t + kind)
@@ -202,6 +204,8 @@ class NavGuiNode(Node):
     def on_feedback(self, n, m):
         """NavFeedback: 상태 숫자 -> 글자, 도착 예상 시간"""
         text = {0: 'IDLE', 1: 'MOVING', 2: 'ARRIVED', 3: 'BLOCKED'}.get(m.status, str(m.status))
+        if m.status == 3 and self.data[n]['robot'] is None:
+            text = 'NO_POSE'    # 3 = 길 없음 또는 위치 모름 -> 위치를 한 번도 못 받았으면 위치 모름
         if text != self.data[n]['status'] and self.log:
             self.log(f'{n} 상태: {text}')
         self.data[n]['status'] = text
@@ -251,6 +255,12 @@ class NavGuiNode(Node):
         self.publish_command(n)
         self.log(f'{n} 멈춤 (nav_enable = false)')
 
+    def clear_cones(self):
+        """모든 로봇의 꼬깔 기억 지우기"""
+        for n in self.names:
+            self.clear_pub[n].publish(Empty())
+        self.log('꼬깔 기억 지움 (지금 보이는 것부터 다시 기억)')
+
     def stop_all(self):
         """UI를 닫을 때: 모든 로봇 nav_enable = false (실제 로봇이 마지막 명령으로 계속 걷지 않게)"""
         for n in self.names:
@@ -260,8 +270,7 @@ class NavGuiNode(Node):
     def send_robot(self, x, y, yaw, n=None):
         n = n or self.selected
         if self.real:
-            self.log('실제 로봇은 옮길 수 없음 (손으로 놓으면 Localization 위치를 씀)')
-            return
+            return          # 실제 로봇은 손으로 놓음 (위치는 Localization)
         msg = PoseWithCovarianceStamped()
         msg.header.frame_id = FRAME
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -273,8 +282,7 @@ class NavGuiNode(Node):
 
     def send_ball(self, x, y):
         if self.real:
-            self.log('실제 로봇 모드: 공은 손으로 옮기기 (Vision이 보면 화면에 나옴)')
-            return
+            return          # 실제 공은 손으로 옮김 (위치는 Vision → world_model)
         msg = PointStamped()
         msg.header.frame_id = FRAME
         msg.header.stamp = self.get_clock().now().to_msg()
@@ -341,6 +349,8 @@ class FieldView(QWidget):
     # ---------- 마우스 ----------
     def mousePressEvent(self, e):
         x, y = self.to_field(e.pos())
+        if self.node.real and (e.button() == Qt.RightButton or e.modifiers() & Qt.ControlModifier):
+            return          # 실제 로봇 모드: 목표 끌기만
         if e.button() == Qt.RightButton:
             self.win.set_ball_inputs(x, y)
             self.node.send_ball(x, y)
@@ -680,7 +690,7 @@ class MainWindow(QMainWindow):
         pick.addSpacing(20)
         setting = QPushButton('모두 세팅 위치로')   # 규정: 경기 전 LEFT 진영 터치라인 세팅 위치에 놓기
         setting.clicked.connect(self.on_all_setting)
-        setting.setEnabled(not self.node.real)      # 실제 로봇은 손으로 놓기
+        setting.setVisible(not self.node.real)      # 실제 로봇은 손으로 놓기
         pick.addWidget(setting)
         self.ready_btn = QPushButton('Ready')
         self.ready_btn.setCheckable(True)
@@ -700,6 +710,8 @@ class MainWindow(QMainWindow):
         rows = [('Robot', (self.rx, self.ry, self.ryaw), 'Set', self.on_set_robot),
                 ('Goal', (self.gx, self.gy, self.gyaw), 'Go', self.on_go),
                 ('Ball', (self.bx, self.by, None), 'Set', self.on_set_ball)]
+        if self.node.real:      # 실제 로봇 모드: 로봇·공 옮기기 줄 없음
+            rows = [r for r in rows if r[0] == 'Goal']
         for c, h in enumerate(['', 'X (m)', 'Y (m)', '각도 (도)']):
             if h:
                 g.addWidget(QLabel(h), 0, c, Qt.AlignCenter)
@@ -712,16 +724,17 @@ class MainWindow(QMainWindow):
             if btn:
                 button = QPushButton(btn)
                 button.clicked.connect(fn)
-                button.setEnabled(not (self.node.real and name in ('Robot', 'Ball')))   # 실제 로봇은 못 옮김
                 g.addWidget(button, r, 4)
 
-        reset = QPushButton('Reset')          # 목표 취소 + 시작 위치로
-        reset.clicked.connect(self.on_reset)
-        reset.setEnabled(not self.node.real)
-        g.addWidget(reset, 1, 5)
         stop = QPushButton('Stop')            # 목표 취소 (그 자리에 멈춤)
         stop.clicked.connect(self.node.send_cancel)
-        g.addWidget(stop, 2, 5)
+        if self.node.real:
+            g.addWidget(stop, 1, 5)           # Goal 줄 옆
+        else:
+            reset = QPushButton('Reset')      # 목표 취소 + 시작 위치로
+            reset.clicked.connect(self.on_reset)
+            g.addWidget(reset, 1, 5)
+            g.addWidget(stop, 2, 5)
 
         front = QHBoxLayout()                 # 공 앞으로 가기 (그 안쪽은 Vision이 맡음)
         front.addWidget(self.tag('공 앞 거리 (m)'))
@@ -731,10 +744,9 @@ class MainWindow(QMainWindow):
         go_front.setStyleSheet('background: #2e7d32;')
         go_front.clicked.connect(self.on_ball_front)
         front.addWidget(go_front)
-        self.avoid = QCheckBox('공 피하기')      # NavCommand.avoid_ball (고른 로봇)
-        self.avoid.setChecked(True)
-        self.avoid.toggled.connect(lambda on: self.node.send_avoid_ball(on))
-        front.addWidget(self.avoid)
+        clear = QPushButton('꼬깔 기억 지우기')   # 위치가 크게 틀렸다가 다시 잡혔을 때 유령 꼬깔 지우기
+        clear.clicked.connect(self.node.clear_cones)
+        front.addWidget(clear)
         front.addStretch()
 
         logo = QFrame()
@@ -862,9 +874,14 @@ class MainWindow(QMainWindow):
             st = self.node.data[n]['status']
             if st == 'ARRIVED':
                 self.ready_wait.discard(n)
+            elif st == 'NO_POSE':
+                self.log(f'{n} 준비 위치로 못 감 (NO_POSE): 위치(world_model)가 안 옴, Localization 확인')
+                self.ready_wait = None
+                return
             elif st == 'BLOCKED':
                 self.log(f'{n} 준비 위치로 못 감 (BLOCKED): 준비 위치가 LEFT 진영 안쪽인지 확인')
-                self.ready_wait.discard(n)
+                self.ready_wait = None
+                return
         if not self.ready_wait:
             self.ready_wait = None
             self.log('준비 완료: 준비 위치에서 정지' if self.node.real else '준비 완료: 두 로봇 모두 준비 위치에서 정지')
@@ -886,9 +903,6 @@ class MainWindow(QMainWindow):
         self.qx.setValue(qx), self.qy.setValue(qy), self.qyaw.setValue(qa)
         self.shown = n
         self.node.selected = n
-        self.avoid.blockSignals(True)
-        self.avoid.setChecked(self.node.command[n].avoid_ball)
-        self.avoid.blockSignals(False)
         for name, b in self.pick_buttons.items():
             b.setChecked(name == n)
             k = self.node.names.index(name)

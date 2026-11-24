@@ -82,6 +82,26 @@ def test_obstacle_memory_field_frame():
     assert len(mem.confirmed()) == 1            # 안 보이는 쪽이면 계속 기억
 
 
+def test_obstacle_memory_ghosts():
+    # 유령 꼬깔 막기: 필드 밖에 보인 꼬깔은 버리고, 카메라 밖이어도 아주 오래 안 보이면 지움
+    from robit_navigation.obstacle_memory import ObstacleMemoryParams
+    mem = ObstacleMemory(ObstacleMemoryParams(max_unseen_time=10.0, field_half_x=4.5, field_half_y=3.0))
+    r = (0, 0, 0)
+    mem.update_field(r, [(1.0, 0.0), (4.8, 0.0)], 0.0)          # (4.8, 0) = 필드 밖
+    mem.update_field(r, [(1.0, 0.0), (4.8, 0.0)], 0.1)
+    assert mem.confirmed() == [(1.0, 0.0)]                      # 필드 밖 꼬깔은 기억 안 함
+    back = (0, 0, R(180))                                       # 반대쪽 보기 = 꼬깔이 카메라 밖
+    mem.update_field(back, [], 5.0)
+    assert len(mem.confirmed()) == 1                            # 10초 안 = 아직 기억
+    mem.update_field(back, [], 10.5)
+    assert mem.confirmed() == []                                # 10초 넘게 안 보임 = 지움
+    mem.update_field(r, [(1.0, 0.0)], 11.0)
+    mem.update_field(r, [(1.0, 0.0)], 11.1)
+    assert len(mem.confirmed()) == 1                            # 다시 보이면 다시 기억
+    mem.clear()
+    assert mem.confirmed() == []                                # 지우기 버튼
+
+
 def test_to_walk():
     from robit_navigation.nav_core import to_walk
     m = (0.3, 0.15, 1.0, 40.0, 20.0, 10.0)      # max_move, max_side, max_turn, ik 최대값

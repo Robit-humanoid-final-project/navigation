@@ -83,6 +83,7 @@ NAV_PARAMS = {
     'merge_dist': 0.3,
     'min_hits': 2,
     'forget_time': 2.0,
+    'max_unseen_time': 10.0,
 }
 
 

@@ -68,7 +68,7 @@ ros2 launch robit_navigation robot.launch.py gui:=false       # UI 없이 (Taskp
 
 - 토픽 이름이 팀 코드와 같음: `nav_command`, `world_model`, `nav_feedback`, `master2ik`
 - UI는 "실제 로봇 모드": 로봇·공·꼬깔은 world_model 값, 목표 끌기·Go·Ready·공 앞으로·Stop 가능
-- 로봇·공 옮기기, 모두 세팅 위치로, Reset은 안 됨 (손으로 놓기)
+- 로봇·공 옮기기, 모두 세팅 위치로, Reset은 숨김 (손으로 놓기), 마우스는 왼쪽 끌기(목표)만
 - **UI를 닫으면 로봇 멈춤** (nav_enable = false)
 - 내비게이션만 Ctrl+C로 끄면 보행이 마지막 명령으로 계속 걸을 수 있음 → 먼저 Stop 또는
   `ros2 topic pub --once nav_command humanoid_interfaces/msg/NavCommand "{nav_enable: false}"`
@@ -104,6 +104,9 @@ Localization(`world_model`)은 지금 카메라에 보이는 꼬깔만 필드 �
 2. 같은 꼬깔을 다시 보면 위치를 조금씩 보정 (오차 줄이기)
 3. 두 번 이상 본 꼬깔만 인정 (`min_hits`, 한 번 잘못 본 것 무시)
 4. 카메라에 보여야 할 곳인데 `forget_time`초 동안 안 보이면 지움 (카메라 시야 `view_angle_deg`, `view_range`는 실제 카메라와 맞추기)
+5. 카메라 밖이어도 `max_unseen_time`초(기본 10초) 동안 다시 안 보이면 지움 (내 위치가 잠깐 틀렸을 때 엉뚱한 곳에 찍힌 유령 꼬깔 방지)
+6. 필드 밖에 보인 꼬깔은 버림
+7. UI **꼬깔 기억 지우기** 버튼 (`nav_clear_cones` 토픽): 위치가 크게 틀렸다가 다시 잡혔을 때 한 번에 지우기
 
 ## 필드 밖으로 안 나가기
 
@@ -158,9 +161,7 @@ UI에서 **Robot 1 / Robot 2** 버튼으로 조작할 로봇을 고름 (노란 �
 - 목표가 없을 때(IDLE)는 정지 명령을 한 번만 보내고 조용히 있음 (Vision 명령과 안 섞이게)
 - UI: **공 앞 거리**(기본 0.5m, 실험하면서 정하기) + **공 앞으로** 버튼 = 고른 로봇이 상대 골대 쪽을 보고 공 앞에 섬
 
-```bash
-# 비교: UI의 "공 피하기" 체크를 끄면 공을 밀고 지나감 (가짜 로봇 창에 "공을 밀었음!")
-```
+- UI에서는 공 피하기가 항상 켜짐 (끄고 켜는 건 Taskplanner가 `NavCommand.avoid_ball`로)
 
 ## PID 제어
 

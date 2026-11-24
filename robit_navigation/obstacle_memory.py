@@ -9,6 +9,9 @@ A-star가 그쪽으로 길을 낼 수 있다. 그래서:
   2. 같은 꼬깔을 다시 보면 위치를 조금씩 보정한다 (Vision 오차 줄이기)
   3. 두 번 이상 본 꼬깔만 진짜로 인정한다 (한 번 잘못 본 것 무시)
   4. 카메라에 보여야 할 곳인데 한동안 안 보이면 지운다 (잘못 본 것 / 치워진 꼬깔)
+  5. 카메라 밖이어도 아주 오래(max_unseen_time) 다시 안 보이면 지운다
+     (내 위치가 잠깐 틀렸을 때 엉뚱한 곳에 찍힌 "유령 꼬깔"이 계속 남지 않게)
+  6. 필드 밖에 보인 꼬깔은 버린다 (꼬깔은 필드 안에만 있음)
 """
 import math
 from dataclasses import dataclass
@@ -24,6 +27,9 @@ class ObstacleMemoryParams:
     view_half_angle: float = math.radians(30.0)   # 카메라 시야 절반 (전체 60도)
     view_range: float = 3.0                 # 카메라가 꼬깔을 볼 수 있는 거리 (m)
     smoothing: float = 0.3                  # 다시 볼 때 위치를 얼마나 새 값 쪽으로 옮길지 (0~1)
+    max_unseen_time: float = 10.0           # 카메라 밖이어도 이만큼 다시 안 보이면 지움 (s), 0 = 안 지움
+    field_half_x: float = 0.0               # 필드 절반 길이 (m), 이 밖에 보인 꼬깔은 버림, 0 = 검사 안 함
+    field_half_y: float = 0.0               # 필드 절반 폭 (m)
 
 
 class ObstacleMemory:
@@ -33,6 +39,11 @@ class ObstacleMemory:
 
     def clear(self):
         self.tracks = []
+
+    def in_field(self, fx, fy):
+        """이 점(필드 기준)이 필드 안인지 (필드 크기를 안 줬으면 항상 True)"""
+        return ((self.p.field_half_x <= 0.0 or abs(fx) <= self.p.field_half_x)
+                and (self.p.field_half_y <= 0.0 or abs(fy) <= self.p.field_half_y))
 
     def in_view(self, robot, fx, fy):
         """이 점(필드 기준)이 지금 카메라 시야 안인지"""
@@ -63,6 +74,8 @@ class ObstacleMemory:
         updated = set()
 
         for fx, fy in seen:
+            if not self.in_field(fx, fy):
+                continue        # 필드 밖 = 잘못 본 것 (또는 내 위치가 틀림)
             # 1. 기억 중인 꼬깔 중 가장 가까운 것 찾기
             best, best_d = None, self.p.merge_dist
             for k, t in enumerate(self.tracks):
@@ -83,13 +96,16 @@ class ObstacleMemory:
                 self.tracks.append({'x': fx, 'y': fy, 'hits': 1, 'last_seen': now})
                 updated.add(len(self.tracks) - 1)
 
-        # 2. 카메라에 보여야 할 곳인데 한동안 안 보인 꼬깔은 지우기
-        self.tracks = [
-            t for k, t in enumerate(self.tracks)
-            if k in updated
-            or not self.in_view(robot, t['x'], t['y'])
-            or now - t['last_seen'] <= self.p.forget_time
-        ]
+        # 2. 지우기: 카메라에 보여야 할 곳인데 forget_time 동안 안 보임,
+        #           또는 (카메라 밖이어도) max_unseen_time 동안 안 보임
+        def keep(k, t):
+            if k in updated:
+                return True
+            unseen = now - t['last_seen']
+            if self.p.max_unseen_time > 0.0 and unseen > self.p.max_unseen_time:
+                return False
+            return not self.in_view(robot, t['x'], t['y']) or unseen <= self.p.forget_time
+        self.tracks = [t for k, t in enumerate(self.tracks) if keep(k, t)]
 
         # 3. 진짜 꼬깔 목록이 바뀌었는지 (개수가 달라졌거나 10cm 넘게 움직였으면)
         after = self.confirmed()

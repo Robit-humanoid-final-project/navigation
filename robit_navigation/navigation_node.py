@@ -16,6 +16,7 @@
                  is_localized      : 아직 Localization에서 구현 안 됨 (항상 false) -> require_localized 가
                                      true일 때만 봄 (위치를 못 믿으면 NO_POSE로 멈춤)
   teammate_pose  geometry_msgs/Pose2D             우리 팀 다른 로봇 위치 (필드 기준) <- UDP (메시지 미정)
+  nav_clear_cones std_msgs/Empty                  꼬깔 기억 지우기 (UI 버튼, 위치가 크게 틀렸다가 다시 잡혔을 때)
                  꼬깔처럼 피함. 1초 넘게 안 오면 무시. 양보(yield_to_teammate)·안전 정지 때는 멈춤
 
 보내는 토픽:
@@ -47,6 +48,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rcl_interfaces.msg import SetParametersResult
 from geometry_msgs.msg import Point, Pose2D, PoseStamped, Twist
+from std_msgs.msg import Empty
 from nav_msgs.msg import Path
 from visualization_msgs.msg import Marker, MarkerArray
 from humanoid_interfaces.msg import Master2IkMsg, NavCommand, NavFeedback, WorldModel
@@ -111,6 +113,7 @@ STARTUP_ONLY = {
     'merge_dist': 0.3,         # 이 거리 안이면 같은 꼬깔
     'min_hits': 2,             # 몇 번 봐야 진짜 꼬깔로 인정
     'forget_time': 2.0,        # 보여야 할 곳에서 이만큼 안 보이면 지움 (s)
+    'max_unseen_time': 10.0,   # 카메라 밖이어도 이만큼 다시 안 보이면 지움 (s), 0 = 안 지움 (유령 꼬깔 방지)
 }
 
 
@@ -127,7 +130,9 @@ class NavigationNode(Node):
         self.res = p('grid_resolution')
         self.memory = ObstacleMemory(ObstacleMemoryParams(
             merge_dist=p('merge_dist'), min_hits=p('min_hits'), forget_time=p('forget_time'),
-            view_half_angle=math.radians(p('view_angle_deg')) / 2.0, view_range=p('view_range')))
+            view_half_angle=math.radians(p('view_angle_deg')) / 2.0, view_range=p('view_range'),
+            max_unseen_time=p('max_unseen_time'),
+            field_half_x=p('field_length') / 2.0, field_half_y=p('field_width') / 2.0))   # 필드 밖 꼬깔 버림
 
         self.robot = None          # 아직 위치를 못 받았으면 None
         self.goal = None           # 아직 목표를 못 받았으면 None
@@ -157,6 +162,7 @@ class NavigationNode(Node):
         self.create_subscription(NavCommand, 'nav_command', self.on_command, 10)
         self.create_subscription(WorldModel, 'world_model', self.on_world, 10)
         self.create_subscription(Pose2D, 'teammate_pose', self.on_teammate, 10)
+        self.create_subscription(Empty, 'nav_clear_cones', self.on_clear_cones, 10)
         # 보내기
         self.walk_pub = self.create_publisher(Master2IkMsg, 'master2ik', 10)
         self.cmd_pub = self.create_publisher(Twist, 'nav_cmd', 10)
@@ -289,6 +295,13 @@ class NavigationNode(Node):
         if self.memory.update_field(self.robot, [(p.x, p.y) for p in msg.obstacles], now):
             self.need_replan = True     # 꼬깔이 새로 보이거나 사라지면 바로 다시 계획
         self.obstacles = [(x, y, self.cone_radius) for x, y in self.memory.confirmed()]
+
+    def on_clear_cones(self, _msg):
+        """꼬깔 기억 지우기 (지금 보이는 것부터 다시 기억)"""
+        self.memory.clear()
+        self.obstacles = []
+        self.need_replan = True
+        self.get_logger().info('꼬깔 기억 지움')
 
     def on_teammate(self, msg):
         self.teammate = (msg.x, msg.y)
