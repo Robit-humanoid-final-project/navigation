@@ -55,6 +55,25 @@ source install/setup.bash
 ros2 launch robit_navigation sim.launch.py
 ```
 
+## 실제 로봇에서 실행
+
+시뮬레이션(`sim.launch.py`)은 가짜 로봇이 같이 켜지니까 **실제 로봇에서 쓰면 안 됨**. 실제 로봇은 `robot.launch.py`:
+
+```bash
+# 먼저 Localization, 보행(ik_walk) 켜기 (ROS_DOMAIN_ID 같게)
+ros2 launch robit_navigation robot.launch.py                  # robot1 + UI
+ros2 launch robit_navigation robot.launch.py robot:=robot2    # robot2 + UI
+ros2 launch robit_navigation robot.launch.py gui:=false       # UI 없이 (Taskplanner가 nav_command)
+```
+
+- 토픽 이름이 팀 코드와 같음: `nav_command`, `world_model`, `nav_feedback`, `master2ik`
+- UI는 "실제 로봇 모드": 로봇·공·꼬깔은 world_model 값, 목표 끌기·Go·Ready·공 앞으로·Stop 가능
+- 로봇·공 옮기기, 모두 세팅 위치로, Reset은 안 됨 (손으로 놓기)
+- **UI를 닫으면 로봇 멈춤** (nav_enable = false)
+- 내비게이션만 Ctrl+C로 끄면 보행이 마지막 명령으로 계속 걸을 수 있음 → 먼저 Stop 또는
+  `ros2 topic pub --once nav_command humanoid_interfaces/msg/NavCommand "{nav_enable: false}"`
+- 방향이 반대면 `ik_max_x`, `ik_max_y`, `ik_max_yaw`를 음수로 (UI 탭에 없음, `ros2 param set /navigation_node ik_max_x -25.0`)
+
 ## 앞걸음 위주로 걷기
 
 휴머노이드는 옆걸음·뒷걸음이 느리고 잘 넘어짐. 그래서
