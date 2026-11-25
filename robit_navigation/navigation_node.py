@@ -305,7 +305,8 @@ class NavigationNode(Node):
         if self.memory.update_field(self.robot, [(p.x, p.y) for p in msg.obstacles], now, still):
             self.need_replan = True     # 꼬깔이 새로 보이거나 사라지면 바로 다시 계획
         if self.memory.num_locked() > locked:
-            self.get_logger().info(f'꼬깔 고정: {self.memory.num_locked()}개')
+            self.get_logger().info(f'꼬깔 고정: {self.memory.num_locked()}개'
+                                   + (' (다 고정됨: 이제 새 꼬깔은 무시)' if self.memory.all_locked() else ''))
         self.obstacles = [(x, y, self.cone_radius) for x, y in self.memory.confirmed()]
 
     def on_clear_cones(self, _msg):

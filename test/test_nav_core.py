@@ -150,3 +150,8 @@ def test_cone_lock_rejects_shaky_and_limits():
     for k in range(12):
         mem.update_field(r, cones, 0.05 * k, still=True)
     assert mem.num_locked() == 3
+    # 3개 다 고정되면 남은 후보는 지우고, 새로 보이는 꼬깔(유령 포함)은 무시
+    assert len(mem.items()) == 3 and all(locked for _, _, locked in mem.items())
+    for k in range(20):
+        mem.update_field(r, [(0.5, 0.5), (2.5, 0.5)], 1.0 + 0.05 * k, still=True)
+    assert len(mem.items()) == 3

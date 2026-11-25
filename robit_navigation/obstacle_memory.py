@@ -17,6 +17,7 @@ A-star가 그쪽으로 길을 낼 수 있다. 그래서:
   - lock_hits 번 이상 보였고, 그 위치들이 lock_spread 안에 모여 있으면 평균 위치로 고정
   - 고정된 꼬깔은 안 보여도 안 지우고, 위치도 안 바뀜 (최대 max_locked 개, 규정 = 3개)
   - 걸을 때(카메라 흔들림) 본 것은 후보로만 씀 -> 유령 꼬깔이 고정되지 않게
+  - max_locked 개가 다 고정되면 그다음부터 들어오는 꼬깔은 전부 무시 (후보도 지움) -> 유령 꼬깔이 아예 안 생김
   - 다시 하려면 clear() (UI "꼬깔 기억 지우기")
 """
 import math
@@ -73,6 +74,10 @@ class ObstacleMemory:
     def num_locked(self):
         return sum(t['locked'] for t in self.tracks)
 
+    def all_locked(self):
+        """꼬깔이 다 고정됐는지 (그러면 새로 보이는 꼬깔은 무시)"""
+        return self.p.lock_hits > 0 and self.p.max_locked > 0 and self.num_locked() >= self.p.max_locked
+
     def try_lock(self, t):
         """멈춰서 본 위치가 충분히 많고 잘 모여 있으면 평균 위치로 고정"""
         s = t['still']
@@ -92,6 +97,10 @@ class ObstacleMemory:
         반환: 계획에 쓰는 꼬깔 목록이 바뀌었으면 True (경로를 다시 짜야 함)
         """
         before = self.confirmed()
+        if self.all_locked():
+            # 꼬깔이 다 고정됨: 새로 보이는 꼬깔은 무시하고, 남은 후보도 지움
+            self.tracks = [t for t in self.tracks if t['locked']]
+            return len(self.confirmed()) != len(before)
         updated = set()
 
         for fx, fy in seen:
@@ -133,6 +142,10 @@ class ObstacleMemory:
                 return False
             return not self.in_view(robot, t['x'], t['y']) or unseen <= self.p.forget_time
         self.tracks = [t for k, t in enumerate(self.tracks) if keep(k, t)]
+
+        # 방금 다 고정됐으면 후보는 지움
+        if self.all_locked():
+            self.tracks = [t for t in self.tracks if t['locked']]
 
         # 3. 계획에 쓰는 꼬깔 목록이 바뀌었는지 (개수가 달라졌거나 10cm 넘게 움직였으면)
         after = self.confirmed()
