@@ -31,6 +31,7 @@
   UI를 닫으면 nav_enable = false 를 보내서 로봇을 멈춤
 """
 import math
+import os
 import signal
 import sys
 import time
@@ -46,7 +47,7 @@ from humanoid_interfaces.msg import NavCommand, NavFeedback, WorldModel
 from visualization_msgs.msg import Marker, MarkerArray
 
 from python_qt_binding.QtCore import QPointF, QRectF, Qt, QTimer
-from python_qt_binding.QtGui import QColor, QFont, QPainter, QPen, QPolygonF
+from python_qt_binding.QtGui import QColor, QFont, QPainter, QPen, QPixmap, QPolygonF
 from python_qt_binding.QtWidgets import (
     QApplication, QDoubleSpinBox, QFrame, QGridLayout, QHBoxLayout, QLabel,
     QMainWindow, QPlainTextEdit, QPushButton, QSpinBox, QTabWidget, QVBoxLayout, QWidget)
@@ -55,8 +56,16 @@ from robit_navigation.ball_approach import ball_front_goal
 from robit_navigation.nav_core import field_to_robot
 
 FRAME = 'map'
-FIELD_L, FIELD_W = 9.0, 6.0      # 필드 크기 (m, 예시 값)
-BORDER = 0.7                     # 필드 선 바깥 여백 (m)
+# 필드 크기 (m): Localization 맵(stadium_info.hpp)과 같은 값
+FIELD_L, FIELD_W = 9.0, 6.0      # A, B: 필드 길이, 폭
+GOAL_DEPTH, GOAL_WIDTH = 0.5, 1.8          # C, D: 골대 깊이, 폭
+GOAL_AREA_L, GOAL_AREA_W = 1.0, 3.0        # E, F: 골 에어리어
+PENALTY_AREA_L, PENALTY_AREA_W = 2.0, 4.0  # G, H: 페널티 에어리어
+PENALTY_MARK = 1.5                         # I: 골라인에서 페널티 마크까지
+CENTER_CIRCLE = 1.5                        # J: 센터서클 지름
+BORDER = 1.0                               # K: 필드 선 바깥 여백
+# 필드 그림: Localization 맵 이미지 (1100 x 800 px = 11 x 8m, 1m = 100px, 가운데 = 원점)
+FIELD_MAP = 'field_map.png'
 CONE_DRAW_R = 0.1                # 실제 로봇 모드에서 꼬깔 그리는 반지름 (m)
 # 로봇별 색 (필드 그림, 경로, 지나온 길)
 ROBOT_COLORS = ['#1e63d6', '#9c27b0', '#00897b', '#f4511e']
@@ -322,14 +331,26 @@ class NavGuiNode(Node):
 
 
 # ======================================================================
+def load_field_map():
+    """설치된 패키지의 Localization 맵 그림 (없으면 None -> 선으로 그림)"""
+    try:
+        from ament_index_python.packages import get_package_share_directory
+        path = os.path.join(get_package_share_directory('robit_navigation'), 'resource', FIELD_MAP)
+    except Exception:
+        return None
+    img = QPixmap(path)
+    return None if img.isNull() else img
+
+
 class FieldView(QWidget):
     """필드 그림 (필드 좌표: 오른쪽 +x, 위쪽 +y)"""
 
     def __init__(self, node, window):
         super().__init__()
         self.node, self.win = node, window
-        self.setMinimumSize(560, 400)
+        self.setMinimumSize(550, 400)
         self.drag = None   # ('goal' 또는 'robot', 시작점, 지금 점)
+        self.map_img = load_field_map()
 
     # 필드 m <-> 화면 픽셀
     def scale(self):
@@ -383,8 +404,14 @@ class FieldView(QWidget):
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         s = self.scale()
-        p.fillRect(self.rect(), QColor('#4ab53c'))
-        self.draw_field(p, s)
+        p.fillRect(self.rect(), QColor('#2c323d'))
+        if self.map_img is not None:
+            # Localization 맵 그림을 필드 좌표에 맞춰 그림 (그림 전체 = 필드 + 바깥 여백 1m)
+            top_left = self.to_px(-(FIELD_L / 2 + BORDER), FIELD_W / 2 + BORDER)
+            p.drawPixmap(QRectF(top_left.x(), top_left.y(), (FIELD_L + 2 * BORDER) * s,
+                                (FIELD_W + 2 * BORDER) * s), self.map_img, QRectF(self.map_img.rect()))
+        else:
+            self.draw_field(p, s)                                # 그림이 없으면 선으로 그림
         self.draw_markers(p, s)
         if self.node.real:
             # 실제 로봇 모드: 지금 보이는 꼬깔(주황)과 공(흰색) = world_model 값
@@ -441,15 +468,22 @@ class FieldView(QWidget):
 
         rect(-hl, -hw, hl, hw)                                   # 바깥선
         p.drawLine(self.to_px(0, -hw), self.to_px(0, hw))        # 센터라인
-        r = 0.75 * s                                             # 센터서클 (지름 1.5m)
+        r = CENTER_CIRCLE / 2 * s                                # 센터서클
         p.drawEllipse(self.to_px(0, 0), r, r)
+
+        def box(depth, width, outside=False):
+            """골라인에 붙은 네모 (depth: 골라인에서 안쪽(또는 바깥쪽) 길이, width: 폭)"""
+            for side in (-1, 1):
+                gx = side * hl
+                ex = gx + side * depth if outside else gx - side * depth
+                rect(min(gx, ex), -width / 2, max(gx, ex), width / 2)
+
+        box(GOAL_AREA_L, GOAL_AREA_W)                            # 골 에어리어
+        box(PENALTY_AREA_L, PENALTY_AREA_W)                      # 페널티 에어리어
+        box(GOAL_DEPTH, GOAL_WIDTH, outside=True)                # 골대 (필드 바깥쪽)
         for side in (-1, 1):
-            gx = side * hl
-            rect(min(gx, gx - side * 1.0), -1.5, max(gx, gx - side * 1.0), 1.5)   # 골 에어리어 1 x 3m
-            rect(min(gx, gx - side * 2.0), -2.5, max(gx, gx - side * 2.0), 2.5)   # 페널티 에어리어 2 x 5m
-            rect(min(gx, gx + side * 0.6), -1.3, max(gx, gx + side * 0.6), 1.3)   # 골대 (바깥쪽)
             p.setBrush(QColor('#ffffff'))
-            p.drawEllipse(self.to_px(side * (hl - 1.5), 0), 0.06 * s, 0.06 * s)   # 페널티 마크
+            p.drawEllipse(self.to_px(side * (hl - PENALTY_MARK), 0), 0.06 * s, 0.06 * s)   # 페널티 마크
             p.setBrush(Qt.NoBrush)
 
     def draw_markers(self, p, s):

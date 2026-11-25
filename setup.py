@@ -12,6 +12,7 @@ setup(
         ('share/ament_index/resource_index/packages', ['resource/' + package_name]),
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
+        ('share/' + package_name + '/resource', ['resource/field_map.png']),   # UI 필드 그림 (Localization 맵)
     ],
     install_requires=['setuptools'],
     zip_safe=True,
