@@ -143,6 +143,7 @@ class NavigationNode(Node):
 
         self.robot = None          # 아직 위치를 못 받았으면 None
         self.goal = None           # 아직 목표를 못 받았으면 None
+        self.nav_enable = False    # NavCommand.nav_enable (false면 master2ik를 절대 안 보냄)
         self.obstacles = []        # 계획에 쓰는 꼬깔 [(x, y, 반지름), ...] (필드 기준)
         self.left_only = False     # True: RIGHT 진영 금지 (Ready), NavCommand.forbid_right_half
         self.avoid_ball = True     # True: 공을 장애물로 피함, NavCommand.avoid_ball
@@ -257,6 +258,7 @@ class NavigationNode(Node):
             self.avoid_ball = msg.avoid_ball
             self.need_replan = True
         # 걷기 끄기 = 목표 취소 (멈추고 IDLE)
+        self.nav_enable = msg.nav_enable
         if not msg.nav_enable:
             self.cancel()
             return
@@ -405,7 +407,8 @@ class NavigationNode(Node):
             self.still_since = None
         elif self.still_since is None:
             self.still_since = self.get_clock().now().nanoseconds * 1e-9
-        if self.goal is not None:
+        # nav_enable 이 false면 보행 명령(master2ik)을 절대 보내지 않음
+        if self.nav_enable and self.goal is not None:
             fp = self.follower.p
             x, y, yaw, flag = to_walk(cmd.linear.x, cmd.linear.y, cmd.angular.z,
                                       fp.max_move, fp.max_side_near, fp.max_turn, *self.ik_max)
