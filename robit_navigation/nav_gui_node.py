@@ -43,7 +43,7 @@ from rclpy.parameter_client import AsyncParameterClient
 from geometry_msgs.msg import Point, PointStamped, Pose2D, PoseWithCovarianceStamped, Twist
 from std_msgs.msg import Empty
 from nav_msgs.msg import Path
-from humanoid_interfaces.msg import NavCommand, NavFeedback, WorldModel
+from humanoid_interfaces.msg import Master2IkMsg, NavCommand, NavFeedback, WorldModel
 from visualization_msgs.msg import Marker, MarkerArray
 
 from python_qt_binding.QtCore import QPointF, QRectF, Qt, QTimer
@@ -174,6 +174,9 @@ class NavGuiNode(Node):
             for kind in ('navigation_node',):
                 self.params[(n, kind)] = AsyncParameterClient(self, t + kind)
 
+        # 실제 로봇 모드: 내비게이션은 nav_enable = false 면 보행 명령을 안 보내니까 (팀 약속),
+        # Stop / UI 닫기 때 Taskplanner 대신 UI가 직접 보행 멈춤(flag 0)을 보냄
+        self.walk_pub = self.create_publisher(Master2IkMsg, '/master2ik', 10) if self.real else None
         if not self.real:
             self.create_subscription(PointStamped, '/ball_pose', self.on_ball, 10)
         self.ball_pub = self.create_publisher(PointStamped, '/clicked_point', 10)
@@ -259,7 +262,13 @@ class NavGuiNode(Node):
         n = n or self.selected
         self.command[n].nav_enable = False
         self.publish_command(n)
+        self.stop_walk()
         self.log(f'{n} 멈춤 (nav_enable = false)')
+
+    def stop_walk(self):
+        """실제 로봇 모드: 보행 멈춤 (master2ik flag 0)"""
+        if self.walk_pub is not None:
+            self.walk_pub.publish(Master2IkMsg(x_length=0.0, y_length=0.0, yaw=0.0, flag=0.0))
 
     def clear_cones(self):
         """모든 로봇의 꼬깔 기억 지우기"""
@@ -272,6 +281,7 @@ class NavGuiNode(Node):
         for n in self.names:
             self.command[n].nav_enable = False
             self.publish_command(n)
+        self.stop_walk()
 
     def send_robot(self, x, y, yaw, n=None):
         n = n or self.selected

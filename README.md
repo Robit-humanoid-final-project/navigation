@@ -27,7 +27,7 @@ Ubuntu 24.04 + ROS2 Jazzy 기준.
 | `world_model` | humanoid_interfaces/WorldModel | 받음 (Localization) | `robot_pose`, `ball_pose`·`ball_detected`, `obstacles` (지금 보이는 꼬깔, 기억해서 씀), `is_localized` (아직 미구현이라 `require_localized: False`) |
 | `teammate_pose` | geometry_msgs/Pose2D | 받음 (UDP, 메시지 미정) | 우리 팀 다른 로봇 위치 |
 | `nav_feedback` | humanoid_interfaces/NavFeedback | 보냄 (Taskplanner) | `status` 0 대기 / 1 이동 중 / 2 도착 / 3 길 없음, `eta_seconds` 도착 예상 시간 (남은 경로 / 최대 속도, 길 없음 -1) |
-| `master2ik` | humanoid_interfaces/Master2IkMsg | 보냄 | 보행 명령. 내 속도를 비율로 바꿈: x_length = (앞 속도 / max_move) x ik_max_x, y·yaw도 같음. flag 1 걷기, 0 멈춤. 멈추면 0을 한 번만 보냄. ik_max_* 는 임시 값 (보행 담당과 확인 중) |
+| `master2ik` | humanoid_interfaces/Master2IkMsg | 보냄 | 보행 명령. 내 속도를 비율로 바꿈: x_length = (앞 속도 / max_move) x ik_max_x, y·yaw도 같음. flag 1 걷기, 0 멈춤. **nav_enable = true일 때만 보냄** (false면 하나도 안 보냄, 멈추기는 Taskplanner). ik_max_* 는 임시 값 (보행 담당과 확인 중) |
 | `nav_cmd` | geometry_msgs/Twist | 보냄 | 같은 명령을 m/s, rad/s로 (가짜 로봇·UI용). linear.x 앞, linear.y 왼쪽, angular.z 회전 |
 | `nav_path` | nav_msgs/Path | 보냄 | A-star 경로 (화면 표시용) |
 | `nav_debug` | visualization_msgs/MarkerArray | 보냄 | 목표, 꼬깔·공 위험 범위, 당근, 상태 글자 (화면 표시용) |
@@ -69,9 +69,9 @@ ros2 launch robit_navigation robot.launch.py gui:=false       # UI 없이 (Taskp
 - 토픽 이름이 팀 코드와 같음: `nav_command`, `world_model`, `nav_feedback`, `master2ik`
 - UI는 "실제 로봇 모드": 로봇·공·꼬깔은 world_model 값, 목표 클릭·Go·Ready·Playing·공 앞으로·Stop 가능
 - 로봇·공 옮기기, 모두 세팅 위치로, Reset은 숨김 (손으로 놓기), 마우스는 왼쪽 클릭·끌기(목표)만
-- **UI를 닫으면 로봇 멈춤** (nav_enable = false)
-- 내비게이션만 Ctrl+C로 끄면 보행이 마지막 명령으로 계속 걸을 수 있음 → 먼저 Stop 또는
-  `ros2 topic pub --once nav_command humanoid_interfaces/msg/NavCommand "{nav_enable: false}"`
+- **Stop 버튼, UI 닫기 = 로봇 멈춤** (nav_enable = false + 보행 멈춤 master2ik flag 0을 UI가 직접 보냄)
+- 내비게이션은 nav_enable = false면 보행 명령을 안 보냄 (팀 약속). 그래서 UI 없이 멈출 때는 보행에 직접:
+  `ros2 topic pub --once master2ik humanoid_interfaces/msg/Master2IkMsg "{flag: 0.0}"`
 - 방향이 반대면 `ik_max_x`, `ik_max_y`, `ik_max_yaw`를 음수로 (UI 탭에 없음, `ros2 param set /navigation_node ik_max_x -25.0`)
 
 ## 앞걸음 위주로 걷기
@@ -168,7 +168,7 @@ UI에서 **Robot 1 / Robot 2** 버튼으로 조작할 로봇을 고름 (노란 �
 - 공은 꼬깔처럼 장애물로 피함 (공 주변 0.37m 안으로 안 들어감 = 공을 안 밀음). 목표가 그 안이면 `BLOCKED`
 - 내비게이션은 **공 앞**(공에서 찰 방향 반대로 "공 앞 거리" 뒤, 찰 방향 바라보기)까지만 데려감
 - 그 안쪽 킥 정렬은 **Taskplanner**가 맡음 (그동안 Taskplanner가 `nav_enable = false`로 내비게이션을 멈춤)
-- 목표가 없을 때(IDLE)는 정지 명령을 한 번만 보내고 조용히 있음 (킥 정렬 명령과 안 섞이게)
+- `nav_enable = false`면 보행 명령(master2ik)을 **하나도 안 보냄** (팀 약속 "True일 때만 Walk", 킥 정렬 명령과 안 섞이게). 멈추기는 Taskplanner가 보냄
 - UI: **공 앞 거리**(기본 0.5m, 실험하면서 정하기) + **공 앞으로** 버튼 = 고른 로봇이 상대 골대 쪽을 보고 공 앞에 섬
 
 - UI에서는 공 피하기가 항상 켜짐 (끄고 켜는 건 Taskplanner가 `NavCommand.avoid_ball`로)

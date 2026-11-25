@@ -31,7 +31,9 @@
                  (ik_max_x, ik_max_y, ik_max_yaw 는 임시 값: 보행 담당 답 오면 바꾸기)
   nav_cmd        geometry_msgs/Twist   같은 명령을 m/s, rad/s 로 (가짜 로봇·UI용)
                  linear.x 앞, linear.y 왼쪽 [m/s], angular.z 회전 [rad/s]
-  master2ik, nav_cmd 둘 다: IDLE이 되면 0을 한 번만 보내고 그다음엔 안 보냄 (킥 정렬 명령과 안 섞이게)
+  master2ik 는 nav_enable = true(목표 있음)일 때만 보냄 (팀 약속 "True일 때만 Walk").
+                 false면 하나도 안 보냄 -> 로봇 멈추기는 Taskplanner(또는 UI Stop)가 master2ik flag 0 으로
+  nav_cmd 는 목표가 없어지면 0을 한 번 보냄 (가짜 로봇 멈춤용)
   nav_path       nav_msgs/Path                    A-star 경로 (화면 표시용)
   nav_debug      visualization_msgs/MarkerArray   목표, 꼬깔·공 위험 범위, 당근, 상태 글자 (화면 표시용)
 
@@ -399,16 +401,18 @@ class NavigationNode(Node):
         self.publish_debug(None if c.arrived else c.carrot)
 
     def publish(self, cmd, status):
-        # 목표가 없을 때(IDLE)는 정지 명령을 한 번만 보내고 조용히 있음
-        # (Taskplanner가 킥 정렬하면서 master2ik를 보낼 때 우리 "0"과 섞이지 않게)
+        # 팀 약속 (NavCommand.nav_enable: "True일 때만 Walk"):
+        #   목표가 있을 때(nav_enable = true)만 master2ik를 보냄. false면 하나도 안 보냄 (멈추는 건 Taskplanner가 보냄)
+        #   nav_cmd(가짜 로봇·UI용)는 목표가 없어지면 0을 한 번 보내서 가짜 로봇을 멈춤
         # 멈춰 있는지 (걷기 명령이 0인 동안): 꼬깔 고정은 멈춰 있을 때 본 것만 씀 (카메라 흔들림 X)
         moving = abs(cmd.linear.x) > 1e-3 or abs(cmd.linear.y) > 1e-3 or abs(cmd.angular.z) > 1e-3
         if moving:
             self.still_since = None
         elif self.still_since is None:
             self.still_since = self.get_clock().now().nanoseconds * 1e-9
-        if not (status == 'IDLE' and self.last_status == 'IDLE'):
+        if self.goal is not None or status != self.last_status:
             self.cmd_pub.publish(cmd)
+        if self.goal is not None:
             fp = self.follower.p
             x, y, yaw, flag = to_walk(cmd.linear.x, cmd.linear.y, cmd.angular.z,
                                       fp.max_move, fp.max_side_near, fp.max_turn, *self.ik_max)
