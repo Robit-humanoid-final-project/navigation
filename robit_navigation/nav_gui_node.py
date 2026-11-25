@@ -503,7 +503,15 @@ class FieldView(QWidget):
                 continue        # 내비게이션 그림(위험 범위, 목표, 당근)은 고른 로봇 것만
             pos = mk.pose.position
             c = self.to_px(pos.x, pos.y)
-            if mk.type in (Marker.CYLINDER, Marker.SPHERE):
+            if topic == 'nav' and ns == 'candidate':
+                # 아직 고정 안 된 꼬깔 (후보): 점선 원
+                r = mk.scale.x / 2 * s
+                pen = QPen(qcolor(mk.color, 1.0), 2, Qt.DashLine)
+                pen.setColor(QColor(255, 170, 80))
+                p.setPen(pen)
+                p.setBrush(Qt.NoBrush)
+                p.drawEllipse(c, max(r, 2.0), max(r, 2.0))
+            elif mk.type in (Marker.CYLINDER, Marker.SPHERE):
                 r = mk.scale.x / 2 * s
                 p.setPen(Qt.NoPen if mk.color.a < 0.5 else QPen(QColor(0, 0, 0, 120), 1))
                 p.setBrush(qcolor(mk.color, 1.6 if mk.color.a < 0.5 else 1.0))

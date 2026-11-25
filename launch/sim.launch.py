@@ -80,10 +80,15 @@ NAV_PARAMS = {
     'ik_max_y': 25.0,
     'ik_max_yaw': 10.0,
     # 꼬깔 기억
-    'merge_dist': 0.3,
+    'merge_dist': 0.5,
     'min_hits': 2,
     'forget_time': 2.0,
     'max_unseen_time': 10.0,
+    # 꼬깔 고정: 멈춰 있을 때 꾸준히 보인 꼬깔을 고정 (꼬깔은 경기 중 안 움직임)
+    'still_time': 1.0,
+    'lock_hits': 10,
+    'lock_spread': 0.15,
+    'max_locked': 3,
 }
 
 

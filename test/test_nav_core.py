@@ -105,3 +105,48 @@ def test_to_walk():
     assert to_walk(9.0, 0.0, 0.0, *m)[0] == 40.0                      # 최대값 넘지 않음
     assert to_walk(0.0, 0.0, 0.0, *m) == (0.0, 0.0, 0.0, 0.0)         # 멈춤 = flag 0
     assert to_walk(0.0, 0.0, 1.0, 0.3, 0.15, 1.0, 40.0, 20.0, -10.0)[2] == -10.0   # 음수 = 방향 반대
+
+
+def test_cone_lock():
+    # 꼬깔 고정: 멈춰 있을 때 꾸준히 보이면 고정, 고정되면 안 보여도 안 지움
+    from robit_navigation.obstacle_memory import ObstacleMemoryParams
+    p = ObstacleMemoryParams(lock_hits=10, lock_spread=0.15, max_locked=3, max_unseen_time=5.0)
+    r, back = (0, 0, 0), (0, 0, R(180))
+    # 걸을 때(still=False)는 아무리 많이 봐도 고정 안 됨
+    mem = ObstacleMemory(p)
+    for k in range(20):
+        mem.update_field(r, [(1.0, 0.0)], 0.05 * k, still=False)
+    assert mem.items() == [(mem.items()[0][0], mem.items()[0][1], False)]
+    # 멈춰 있을 때 10번 보이면 고정 (흔들림 ±5cm)
+    mem = ObstacleMemory(p)
+    for k in range(10):
+        mem.update_field(r, [(1.0 + 0.05 * (-1) ** k, 0.0)], 0.05 * k, still=True)
+    (x, y, locked), = mem.items()
+    assert locked and abs(x - 1.0) < 0.03 and abs(y) < 0.03
+    # 고정되면 걸으면서 다르게 보여도 위치 안 바뀜, 오래 안 보여도 안 지움
+    mem.update_field(r, [(1.3, 0.1)], 1.0, still=False)
+    mem.update_field(back, [], 100.0)
+    (x2, y2, locked2), = mem.items()
+    assert locked2 and (x2, y2) == (x, y)
+    # 다시 하기 (꼬깔 기억 지우기)
+    mem.clear()
+    assert mem.items() == []
+
+
+def test_cone_lock_rejects_shaky_and_limits():
+    from robit_navigation.obstacle_memory import ObstacleMemoryParams
+    p = ObstacleMemoryParams(lock_hits=10, lock_spread=0.15, max_locked=3)
+    r = (0, 0, 0)
+    # 멈춰 있어도 위치가 들쭉날쭉(최대 ±25cm)하면 고정 안 됨 (유령/흔들림)
+    mem = ObstacleMemory(p)
+    jitter = [0.25, -0.2, 0.1, -0.25, 0.2, 0.0, -0.1, 0.25, -0.15, 0.05]
+    for k in range(20):
+        mem.update_field(r, [(2.0 + jitter[k % 10], 0.0)], 0.05 * k, still=True)
+    assert len(mem.items()) == 1
+    assert all(not locked for _, _, locked in mem.items())
+    # 고정은 최대 3개까지
+    mem = ObstacleMemory(p)
+    cones = [(1.0, -1.0), (1.5, 0.0), (2.0, 1.0), (2.5, 0.5)]
+    for k in range(12):
+        mem.update_field(r, cones, 0.05 * k, still=True)
+    assert mem.num_locked() == 3
