@@ -29,11 +29,8 @@
                    예) 앞 속도가 max_move 면 x_length = ik_max_x, 절반이면 ik_max_x 의 절반
                  flag = 1 걷기, 0 멈춤
                  (ik_max_x, ik_max_y, ik_max_yaw 는 임시 값: 보행 담당 답 오면 바꾸기)
-  nav_cmd        geometry_msgs/Twist   같은 명령을 m/s, rad/s 로 (가짜 로봇·UI용)
-                 linear.x 앞, linear.y 왼쪽 [m/s], angular.z 회전 [rad/s]
   master2ik 는 nav_enable = true(목표 있음)일 때만 보냄 (팀 약속 "True일 때만 Walk").
                  false면 하나도 안 보냄 -> 로봇 멈추기는 Taskplanner(또는 UI Stop)가 master2ik flag 0 으로
-  nav_cmd 는 목표가 없어지면 0을 한 번 보냄 (가짜 로봇 멈춤용)
   nav_path       nav_msgs/Path                    A-star 경로 (화면 표시용)
   nav_debug      visualization_msgs/MarkerArray   목표, 꼬깔·공 위험 범위, 당근, 상태 글자 (화면 표시용)
 
@@ -41,7 +38,7 @@
 
 이동, 회전 모두 PID 제어 (ki, kd = 0 이면 P만)
 튜닝 값은 실행 중에도 바꿀 수 있음 (빌드 다시 안 해도 됨):
-  ros2 param set /robot1/navigation_node ki_move 0.5
+  ros2 param set /navigation_node ki_move 0.5
 """
 import math
 
@@ -175,7 +172,6 @@ class NavigationNode(Node):
         self.create_subscription(Empty, 'nav_clear_cones', self.on_clear_cones, 10)
         # 보내기
         self.walk_pub = self.create_publisher(Master2IkMsg, 'master2ik', 10)
-        self.cmd_pub = self.create_publisher(Twist, 'nav_cmd', 10)
         self.feedback_pub = self.create_publisher(NavFeedback, 'nav_feedback', 10)
         self.path_pub = self.create_publisher(Path, 'nav_path', 10)
         self.debug_pub = self.create_publisher(MarkerArray, 'nav_debug', 10)
@@ -403,15 +399,12 @@ class NavigationNode(Node):
     def publish(self, cmd, status):
         # 팀 약속 (NavCommand.nav_enable: "True일 때만 Walk"):
         #   목표가 있을 때(nav_enable = true)만 master2ik를 보냄. false면 하나도 안 보냄 (멈추는 건 Taskplanner가 보냄)
-        #   nav_cmd(가짜 로봇·UI용)는 목표가 없어지면 0을 한 번 보내서 가짜 로봇을 멈춤
         # 멈춰 있는지 (걷기 명령이 0인 동안): 꼬깔 고정은 멈춰 있을 때 본 것만 씀 (카메라 흔들림 X)
         moving = abs(cmd.linear.x) > 1e-3 or abs(cmd.linear.y) > 1e-3 or abs(cmd.angular.z) > 1e-3
         if moving:
             self.still_since = None
         elif self.still_since is None:
             self.still_since = self.get_clock().now().nanoseconds * 1e-9
-        if self.goal is not None or status != self.last_status:
-            self.cmd_pub.publish(cmd)
         if self.goal is not None:
             fp = self.follower.p
             x, y, yaw, flag = to_walk(cmd.linear.x, cmd.linear.y, cmd.angular.z,
