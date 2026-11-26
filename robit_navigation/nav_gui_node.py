@@ -78,6 +78,7 @@ PATH_PARAMS = [
     ('tol_yaw_deg', '허용 각도 도', 0, 90, 1, 1), ('carrot_points', '당근 (점 개수)', 1, 30, 1, 0),
     ('boundary_margin', '선 안쪽 여유 m', 0, 1, 0.05, 2), ('center_margin', '가운데선 여유 m', 0, 1, 0.05, 2),
     ('arrive_latch', '도착 래치 (배)', 0, 5, 0.5, 1),
+    ('keep_side_cost', '같은 쪽 유지 (배)', 0, 3, 0.1, 1),
 ]
 
 READY_ON = 'background: #c62828; border: 3px solid #ffe14d;'    # Ready 켜짐 (빨강)
@@ -205,7 +206,7 @@ class NavGuiNode(Node):
         self.walk_pub.publish(Master2IkMsg(x_length=0.0, y_length=0.0, yaw=0.0, flag=0.0))
 
     def clear_cones(self):
-        """꼬깔 기억 지우기 (고정도 풀림)"""
+        """꼬깔 기억 지우기"""
         self.clear_pub.publish(Empty())
         self.log('꼬깔 기억 지움 (지금 보이는 것부터 다시 기억)')
 
@@ -399,13 +400,7 @@ class FieldView(QWidget):
         for (ns, _), mk in sorted(self.node.markers.items(), key=lambda kv: order(kv[1])):
             pos = mk.pose.position
             c = self.to_px(pos.x, pos.y)
-            if ns == 'candidate':
-                # 아직 고정 안 된 꼬깔 (후보): 점선 원
-                r = mk.scale.x / 2 * s
-                p.setPen(QPen(QColor(255, 170, 80), 2, Qt.DashLine))
-                p.setBrush(Qt.NoBrush)
-                p.drawEllipse(c, max(r, 2.0), max(r, 2.0))
-            elif mk.type in (Marker.CYLINDER, Marker.SPHERE):
+            if mk.type in (Marker.CYLINDER, Marker.SPHERE):
                 r = mk.scale.x / 2 * s
                 p.setPen(Qt.NoPen if mk.color.a < 0.5 else QPen(QColor(0, 0, 0, 120), 1))
                 p.setBrush(qcolor(mk.color, 1.6 if mk.color.a < 0.5 else 1.0))
@@ -489,15 +484,11 @@ class RobotView(QWidget):
                 p.drawLine(px(0, 0), px(3 * math.cos(r), 3 * math.sin(r)))
             # 내비게이션이 아는 위험 범위, 당근, 목표 (필드 -> 로봇 기준)
             for (ns, _), mk in self.node.markers.items():
-                if ns not in ('inflated', 'candidate', 'ball_zone', 'teammate', 'carrot', 'goal'):
+                if ns not in ('inflated', 'ball_zone', 'teammate', 'carrot', 'goal'):
                     continue
                 f, l = field_to_robot(robot, mk.pose.position.x, mk.pose.position.y)
                 r = mk.scale.x / 2 * s
-                if ns == 'candidate':
-                    p.setPen(QPen(QColor(255, 170, 80), 2, Qt.DashLine))
-                    p.setBrush(Qt.NoBrush)
-                    p.drawEllipse(px(f, l), r, r)
-                elif ns in ('inflated', 'ball_zone', 'teammate'):
+                if ns in ('inflated', 'ball_zone', 'teammate'):
                     p.setPen(Qt.NoPen)
                     p.setBrush(qcolor(mk.color, 1.6))
                     p.drawEllipse(px(f, l), r, r)
@@ -651,7 +642,7 @@ class MainWindow(QMainWindow):
         go_front.setStyleSheet('background: #2e7d32;')
         go_front.clicked.connect(self.on_ball_front)
         front.addWidget(go_front)
-        clear = QPushButton('꼬깔 기억 지우기')   # 고정도 풀고 처음부터 (잘못 고정됐거나 꼬깔이 밀렸을 때)
+        clear = QPushButton('꼬깔 기억 지우기')   # 처음부터 다시 (내 위치가 크게 틀렸다가 다시 잡혔을 때)
         clear.clicked.connect(self.node.clear_cones)
         front.addWidget(clear)
         front.addStretch()

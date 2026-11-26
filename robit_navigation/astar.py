@@ -30,6 +30,7 @@ class GridPlanner:
         self.obstacles = []                         # [(x, y, 꼬깔 반지름), ...]
         self.blocked = self.empty_map()
         self.last_expanded = 0                      # 마지막 탐색에서 확장한 칸 수 (확인용)
+        self.prefer, self.prefer_cost = None, 0.0     # 지금 길 근처 칸 (set_prefer)
 
     # ---------------- 좌표 <-> 칸 번호 ----------------
     def to_cell(self, x, y):
@@ -119,6 +120,27 @@ class GridPlanner:
                 return False
         return True
 
+    def set_prefer(self, path, cost=0.5, width=0.4):
+        """
+        한 번 정한 쪽 유지: 꼬깔 위치가 조금 흔들리면 왼쪽/오른쪽으로 돌아가는 길 길이가 비슷해서
+        A-star가 매번 다른 쪽을 고를 수 있음 -> 왔다 갔다 하다 꼬깔을 박음. 그래서
+        지금 길(path)에서 width 밖 칸은 지나가는 비용을 (1 + cost)배로 함
+        -> 꼬깔이 조금 움직이면 같은 쪽으로 살짝 옮긴 길을 고름, 그쪽이 막히면 다른 쪽으로 감
+        path = None 또는 cost = 0 이면 안 씀
+        """
+        self.prefer, self.prefer_cost = None, cost
+        if not path or cost <= 0.0:
+            return
+        k = int(math.ceil(width / self.res))
+        self.prefer = set()
+        for x, y in path:
+            ci, cj = self.to_cell(x, y)
+            for i in range(ci - k, ci + k + 1):
+                for j in range(cj - k, cj + k + 1):
+                    px, py = self.to_point(i, j)
+                    if math.hypot(px - x, py - y) <= width:
+                        self.prefer.add((i, j))
+
     # ---------------- A-star ----------------
     def plan(self, start_xy, goal_xy):
         """
@@ -184,6 +206,8 @@ class GridPlanner:
                     if self.blocked[cur[0] + di][cur[1]] or self.blocked[cur[0]][cur[1] + dj]:
                         continue
                 new_g = g_cost[cur] + cost * self.res
+                if self.prefer is not None and nb not in self.prefer:
+                    new_g += cost * self.res * self.prefer_cost     # 지금 길에서 벗어난 칸 = 비쌈
                 if new_g < g_cost.get(nb, float('inf')):
                     g_cost[nb] = new_g
                     parent[nb] = cur

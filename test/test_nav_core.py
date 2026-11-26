@@ -2,7 +2,8 @@
 import math
 
 from robit_navigation.nav_core import Pid, field_to_robot, normalize_angle, path_remaining, robot_to_field
-from robit_navigation.obstacle_memory import ObstacleMemory
+from robit_navigation.obstacle_memory import ObstacleMemory, ObstacleMemoryParams
+from robit_navigation.astar import GridPlanner
 
 R = math.radians
 
@@ -107,51 +108,41 @@ def test_to_walk():
     assert to_walk(0.0, 0.0, 1.0, 0.3, 0.15, 1.0, 40.0, 20.0, -10.0)[2] == -10.0   # 음수 = 방향 반대
 
 
-def test_cone_lock():
-    # 꼬깔 고정: 멈춰 있을 때 꾸준히 보이면 고정, 고정되면 안 보여도 안 지움
-    from robit_navigation.obstacle_memory import ObstacleMemoryParams
-    p = ObstacleMemoryParams(lock_hits=10, lock_spread=0.15, max_locked=3, max_unseen_time=5.0)
-    r, back = (0, 0, 0), (0, 0, R(180))
-    # 걸을 때(still=False)는 아무리 많이 봐도 고정 안 됨
-    mem = ObstacleMemory(p)
-    for k in range(20):
-        mem.update_field(r, [(1.0, 0.0)], 0.05 * k, still=False)
-    assert mem.items() == [(mem.items()[0][0], mem.items()[0][1], False)]
-    # 멈춰 있을 때 10번 보이면 고정 (흔들림 ±5cm)
-    mem = ObstacleMemory(p)
-    for k in range(10):
-        mem.update_field(r, [(1.0 + 0.05 * (-1) ** k, 0.0)], 0.05 * k, still=True)
-    (x, y, locked), = mem.items()
-    assert locked and abs(x - 1.0) < 0.03 and abs(y) < 0.03
-    # 고정되면 걸으면서 다르게 보여도 위치 안 바뀜, 오래 안 보여도 안 지움
-    mem.update_field(r, [(1.3, 0.1)], 1.0, still=False)
-    mem.update_field(back, [], 100.0)
-    (x2, y2, locked2), = mem.items()
-    assert locked2 and (x2, y2) == (x, y)
-    # 다시 하기 (꼬깔 기억 지우기)
-    mem.clear()
-    assert mem.items() == []
+def test_cone_follows_new_position():
+    # 고정 안 함: 내 위치가 틀렸을 때 잘못 찍힌 꼬깔도, 다시 제대로 보이면 새 위치로 바뀜
+    mem = ObstacleMemory(ObstacleMemoryParams(merge_dist=0.5, forget_time=2.0))
+    r = (0.0, 0.0, 0.0)
+    for k in range(5):
+        mem.update_field(r, [(2.0, 0.35)], 0.1 * k)          # 방향이 틀려서 35cm 옆에 찍힘
+    for k in range(30):
+        mem.update_field(r, [(2.0, 0.0)], 1.0 + 0.1 * k)     # 위치가 다시 맞음
+    (x, y), = mem.confirmed()
+    assert abs(x - 2.0) < 0.03 and abs(y) < 0.03
 
 
-def test_cone_lock_rejects_shaky_and_limits():
-    from robit_navigation.obstacle_memory import ObstacleMemoryParams
-    p = ObstacleMemoryParams(lock_hits=10, lock_spread=0.15, max_locked=3)
-    r = (0, 0, 0)
-    # 멈춰 있어도 위치가 들쭉날쭉(최대 ±25cm)하면 고정 안 됨 (유령/흔들림)
-    mem = ObstacleMemory(p)
-    jitter = [0.25, -0.2, 0.1, -0.25, 0.2, 0.0, -0.1, 0.25, -0.15, 0.05]
-    for k in range(20):
-        mem.update_field(r, [(2.0 + jitter[k % 10], 0.0)], 0.05 * k, still=True)
-    assert len(mem.items()) == 1
-    assert all(not locked for _, _, locked in mem.items())
-    # 고정은 최대 3개까지
-    mem = ObstacleMemory(p)
-    cones = [(1.0, -1.0), (1.5, 0.0), (2.0, 1.0), (2.5, 0.5)]
-    for k in range(12):
-        mem.update_field(r, cones, 0.05 * k, still=True)
-    assert mem.num_locked() == 3
-    # 3개 다 고정되면 남은 후보는 지우고, 새로 보이는 꼬깔(유령 포함)은 무시
-    assert len(mem.items()) == 3 and all(locked for _, _, locked in mem.items())
-    for k in range(20):
-        mem.update_field(r, [(0.5, 0.5), (2.5, 0.5)], 1.0 + 0.05 * k, still=True)
-    assert len(mem.items()) == 3
+def test_keep_same_side():
+    # 꼬깔이 조금 흔들려도 한 번 정한 쪽(왼쪽/오른쪽)으로 계속 감
+    pl = GridPlanner(-4.5, 4.5, -3.0, 3.0, resolution=0.1, robot_radius=0.15, margin=0.08, boundary_margin=0.2)
+    start, goal = (-1.5, 0.0), (1.5, 0.0)
+
+    def side(path):
+        mid = [y for x, y in path if abs(x) < 0.3]
+        return 'L' if sum(mid) / len(mid) > 0 else 'R'
+
+    pl.set_obstacles([(0.0, 0.05, 0.1)])
+    path = pl.plan(start, goal)
+    first = side(path)
+    flips_before = 0
+    for cy in (-0.1, 0.1, -0.08, 0.06, -0.1):                # 꼬깔이 좌우로 흔들림
+        pl.set_obstacles([(0.0, cy, 0.1)])
+        pl.set_prefer(None)
+        flips_before += side(pl.plan(start, goal)) != first  # 예전 방식: 쪽이 바뀜
+        pl.set_prefer(path, 0.5)
+        path = pl.plan(start, goal)
+        assert side(path) == first                            # 새 방식: 같은 쪽 유지
+    assert flips_before > 0
+    # 지금 쪽이 꼬깔 벽으로 완전히 막히면 다른 쪽으로 바꿈
+    sign = 1.0 if first == 'L' else -1.0
+    pl.set_obstacles([(0.0, 0.0, 0.1)] + [(0.0, sign * 0.45 * k, 0.1) for k in range(1, 7)])
+    pl.set_prefer(path, 0.5)
+    assert side(pl.plan(start, goal)) != first

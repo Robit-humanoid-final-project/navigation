@@ -11,14 +11,8 @@ A-star가 그쪽으로 길을 낼 수 있다. 그래서:
   5. 카메라 밖이어도 아주 오래(max_unseen_time) 다시 안 보이면 지운다
      (내 위치가 잠깐 틀렸을 때 엉뚱한 곳에 찍힌 "유령 꼬깔"이 계속 남지 않게)
   6. 필드 밖에 보인 꼬깔은 버린다 (꼬깔은 필드 안에만 있음)
-
-꼬깔 고정 (꼬깔은 경기 중 안 움직이니까):
-  - 로봇이 멈춰 있을 때(still) 본 위치만 모아서
-  - lock_hits 번 이상 보였고, 그 위치들이 lock_spread 안에 모여 있으면 평균 위치로 고정
-  - 고정된 꼬깔은 안 보여도 안 지우고, 위치도 안 바뀜 (최대 max_locked 개, 규정 = 3개)
-  - 걸을 때(카메라 흔들림) 본 것은 후보로만 씀 -> 유령 꼬깔이 고정되지 않게
-  - max_locked 개가 다 고정되면 그다음부터 들어오는 꼬깔은 전부 무시 (후보도 지움) -> 유령 꼬깔이 아예 안 생김
-  - 다시 하려면 clear() (UI "꼬깔 기억 지우기")
+꼬깔 위치를 고정하지는 않는다: 내 위치가 틀린 순간에 고정되면 틀린 위치가 계속 남기 때문
+(RoboCup Bit-Bots robot_filter 도 고정 없이 새로 본 위치로 바꾸고 10초 안 보이면 지움)
 """
 import math
 from dataclasses import dataclass
@@ -29,7 +23,7 @@ from robit_navigation.nav_core import field_to_robot
 @dataclass
 class ObstacleMemoryParams:
     merge_dist: float = 0.5                 # 이 거리 안이면 같은 꼬깔로 봄 (m)
-    min_hits: int = 2                       # 몇 번 봐야 진짜 꼬깔(후보)로 인정할지
+    min_hits: int = 2                       # 몇 번 봐야 진짜 꼬깔로 인정할지
     forget_time: float = 2.0                # 보여야 할 곳에서 이만큼 안 보이면 지움 (s)
     view_half_angle: float = math.radians(30.0)   # 카메라 시야 절반 (전체 60도)
     view_range: float = 3.0                 # 카메라가 꼬깔을 볼 수 있는 거리 (m)
@@ -37,16 +31,12 @@ class ObstacleMemoryParams:
     max_unseen_time: float = 10.0           # 카메라 밖이어도 이만큼 다시 안 보이면 지움 (s), 0 = 안 지움
     field_half_x: float = 0.0               # 필드 절반 길이 (m), 이 밖에 보인 꼬깔은 버림, 0 = 검사 안 함
     field_half_y: float = 0.0               # 필드 절반 폭 (m)
-    lock_hits: int = 10                     # 멈춰서 이만큼 보이면 고정 (0 = 고정 안 함)
-    lock_spread: float = 0.15               # 그 위치들이 평균에서 이 거리 안에 다 모여야 고정 (m)
-    max_locked: int = 3                     # 고정할 수 있는 꼬깔 수 (규정: 꼬깔 3개)
 
 
 class ObstacleMemory:
     def __init__(self, params=None):
         self.p = params or ObstacleMemoryParams()
-        # [{'x', 'y', 'hits', 'last_seen', 'locked', 'still': [(x, y), ...]}, ...]  필드 기준
-        self.tracks = []
+        self.tracks = []    # [{'x', 'y', 'hits', 'last_seen'}, ...]  필드 기준
 
     def clear(self):
         self.tracks = []
@@ -63,44 +53,15 @@ class ObstacleMemory:
                 and abs(math.atan2(left, front)) < self.p.view_half_angle)
 
     def confirmed(self):
-        """경로 계획에 쓰는 꼬깔 [(x, y), ...] (필드 기준) = 고정된 것 + 인정된 후보"""
-        return [(t['x'], t['y']) for t in self.tracks if t['locked'] or t['hits'] >= self.p.min_hits]
+        """경로 계획에 쓰는 꼬깔 [(x, y), ...] (필드 기준) = min_hits 번 이상 본 것"""
+        return [(t['x'], t['y']) for t in self.tracks if t['hits'] >= self.p.min_hits]
 
-    def items(self):
-        """화면 표시용 [(x, y, 고정 여부), ...]"""
-        return [(t['x'], t['y'], t['locked']) for t in self.tracks
-                if t['locked'] or t['hits'] >= self.p.min_hits]
-
-    def num_locked(self):
-        return sum(t['locked'] for t in self.tracks)
-
-    def all_locked(self):
-        """꼬깔이 다 고정됐는지 (그러면 새로 보이는 꼬깔은 무시)"""
-        return self.p.lock_hits > 0 and self.p.max_locked > 0 and self.num_locked() >= self.p.max_locked
-
-    def try_lock(self, t):
-        """멈춰서 본 위치가 충분히 많고 잘 모여 있으면 평균 위치로 고정"""
-        s = t['still']
-        if (self.p.lock_hits <= 0 or len(s) < self.p.lock_hits
-                or self.num_locked() >= self.p.max_locked):
-            return
-        mx = sum(x for x, _ in s) / len(s)
-        my = sum(y for _, y in s) / len(s)
-        if all(math.hypot(x - mx, y - my) <= self.p.lock_spread for x, y in s):
-            t['x'], t['y'], t['locked'] = mx, my, True
-
-    def update_field(self, robot, seen, now, still=False):
+    def update_field(self, robot, seen, now):
         """
-        필드 기준으로 받은 경우 (Localization world_model)
         robot: 지금 내 위치 (x, y, yaw), seen: 이번에 보인 꼬깔 [(x, y), ...] (필드 기준)
-        still: 로봇이 멈춰 있는지 (True일 때 본 위치만 고정에 씀)
         반환: 계획에 쓰는 꼬깔 목록이 바뀌었으면 True (경로를 다시 짜야 함)
         """
         before = self.confirmed()
-        if self.all_locked():
-            # 꼬깔이 다 고정됨: 새로 보이는 꼬깔은 무시하고, 남은 후보도 지움
-            self.tracks = [t for t in self.tracks if t['locked']]
-            return len(self.confirmed()) != len(before)
         updated = set()
 
         for fx, fy in seen:
@@ -114,38 +75,28 @@ class ObstacleMemory:
                     best, best_d = k, d
 
             if best is not None:
+                # 같은 꼬깔: 위치를 새 값 쪽으로 조금 옮겨서 오차를 줄임
                 t = self.tracks[best]
                 t['hits'] += 1
                 t['last_seen'] = now
-                updated.add(best)
-                if t['locked']:
-                    continue    # 고정된 꼬깔: 위치 안 바꿈
-                # 같은 꼬깔: 위치를 새 값 쪽으로 조금 옮겨서 오차를 줄임
                 t['x'] += self.p.smoothing * (fx - t['x'])
                 t['y'] += self.p.smoothing * (fy - t['y'])
-                if still:
-                    t['still'] = (t['still'] + [(fx, fy)])[-max(self.p.lock_hits, 1):]   # 최근 것만
-                    self.try_lock(t)
+                updated.add(best)
             else:
                 # 처음 보는 꼬깔: 새로 기억 (아직 1번만 봐서 진짜로는 인정 안 함)
-                self.tracks.append({'x': fx, 'y': fy, 'hits': 1, 'last_seen': now, 'locked': False,
-                                    'still': [(fx, fy)] if still else []})
+                self.tracks.append({'x': fx, 'y': fy, 'hits': 1, 'last_seen': now})
                 updated.add(len(self.tracks) - 1)
 
-        # 2. 지우기 (고정된 꼬깔은 안 지움): 카메라에 보여야 할 곳인데 forget_time 동안 안 보임,
+        # 2. 지우기: 카메라에 보여야 할 곳인데 forget_time 동안 안 보임,
         #           또는 (카메라 밖이어도) max_unseen_time 동안 안 보임
         def keep(k, t):
-            if t['locked'] or k in updated:
+            if k in updated:
                 return True
             unseen = now - t['last_seen']
             if self.p.max_unseen_time > 0.0 and unseen > self.p.max_unseen_time:
                 return False
             return not self.in_view(robot, t['x'], t['y']) or unseen <= self.p.forget_time
         self.tracks = [t for k, t in enumerate(self.tracks) if keep(k, t)]
-
-        # 방금 다 고정됐으면 후보는 지움
-        if self.all_locked():
-            self.tracks = [t for t in self.tracks if t['locked']]
 
         # 3. 계획에 쓰는 꼬깔 목록이 바뀌었는지 (개수가 달라졌거나 10cm 넘게 움직였으면)
         after = self.confirmed()

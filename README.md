@@ -12,7 +12,7 @@ Ubuntu 24.04 + ROS2 Jazzy 기준.
 | `robit_navigation/astar.py` | ✅ | 꼬깔 부풀리기 + 격자 A-star 경로 계획 |
 | `robit_navigation/ball_approach.py` | ✅ | 공을 장애물로 피하는 경로, 공 앞 자리 계산 |
 | `robit_navigation/teammate.py` | ✅ | 우리 팀 다른 로봇 피하기: 움직이는 꼬깔 취급, 양보, 안전 정지 |
-| `robit_navigation/obstacle_memory.py` | ✅ | world_model 꼬깔(필드 기준) 기억, 유령 꼬깔 지우기, 꼬깔 고정 |
+| `robit_navigation/obstacle_memory.py` | ✅ | world_model 꼬깔(필드 기준) 기억, 유령 꼬깔 지우기 |
 | `robit_navigation/navigation_node.py` | ✅ | ROS2 노드: 위치·목표·꼬깔 받기 → 경로 계획 → 보행 명령·상태 보내기 |
 | `robit_navigation/nav_gui_node.py` | ❌ 확인용 | Navigation UI (Localization UI와 같은 배치): 필드 보기, 목표 주기, 튜닝 |
 | `launch/robot.launch.py` | | 실제 로봇에서 내비게이션 + UI 실행 |
@@ -26,7 +26,7 @@ Ubuntu 24.04 + ROS2 Jazzy 기준.
 | `nav_command` | humanoid_interfaces/NavCommand | 받음 (Taskplanner) | `nav_enable` (false = 멈춤), 목표 `x, y, theta`, `pos_tolerance`, `theta_tolerance` (0 이하면 기본값), `forbid_right_half` (Ready), `avoid_ball` |
 | `world_model` | humanoid_interfaces/WorldModel | 받음 (Localization) | `robot_pose`, `ball_pose`·`ball_detected`, `obstacles` (지금 보이는 꼬깔, 기억해서 씀), `is_localized` (아직 미구현이라 `require_localized: False`) |
 | `teammate_pose` | geometry_msgs/Pose2D | 받음 (UDP, 메시지 미정) | 우리 팀 다른 로봇 위치 |
-| `nav_clear_cones` | std_msgs/Empty | 받음 (UI) | 꼬깔 기억 지우기 (고정도 풀림) |
+| `nav_clear_cones` | std_msgs/Empty | 받음 (UI) | 꼬깔 기억 지우기 |
 | `nav_feedback` | humanoid_interfaces/NavFeedback | 보냄 (Taskplanner) | `status` 0 대기 / 1 이동 중 / 2 도착 / 3 길 없음·위치 모름, `eta_seconds` 도착 예상 시간 (남은 경로 / 최대 속도, 길 없음 -1) |
 | `master2ik` | humanoid_interfaces/Master2IkMsg | 보냄 (보행) | 보행 명령. 속도를 비율로 바꿈: x_length = (앞 속도 / max_move) x ik_max_x, y·yaw도 같음. flag 1 걷기, 0 멈춤. **nav_enable = true일 때만 보냄** (false면 하나도 안 보냄, 멈추기는 Taskplanner) |
 | `nav_path` | nav_msgs/Path | 보냄 | A-star 경로 (UI 표시용) |
@@ -86,6 +86,11 @@ ros2 launch robit_navigation robot.launch.py gui:=false       # UI 없이 (Taskp
 | 목표 0.3m(`near_dist`) 안 | 마지막 방향을 보면서 옆걸음(`max_side_near` 0.15)·작은 뒷걸음(`max_back` 0.05)으로 맞춤 |
 | 위치 도착 | 제자리에서 마지막 방향 맞추기 → ARRIVED |
 
+**한 번 정한 쪽 유지**
+- 꼬깔이 정면에 있으면 왼쪽·오른쪽으로 돌아가는 길 길이가 비슷해서, 꼬깔 위치가 조금만 흔들려도 A-star가 매번 다른 쪽을 고름 → 왔다 갔다 하다 박음
+- 그래서 다시 계획할 때 지금 길에서 40cm 넘게 벗어난 칸은 비용을 (1 + `keep_side_cost`)배로 함 (기본 0.5, 0 = 안 씀)
+- 꼬깔이 조금 움직이면 같은 쪽으로 살짝 옮긴 길을 고르고, 그쪽이 막히면 다른 쪽으로 감
+
 **꼬깔 모서리 안 깎기**
 - 로봇에서 당근까지 직선이 꼬깔 범위를 지나면 당근을 한 칸씩 가까이 당김
 - 경로 끝에서도 목표까지 직선이 안전할 때만 목표로 곧장 감 (목표가 꼬깔 바로 뒤면 경로 따라 돌아감)
@@ -107,15 +112,9 @@ Localization(`world_model`)은 지금 카메라에 보이는 꼬깔만 필드 �
 4. 카메라에 보여야 할 곳인데 `forget_time`초 동안 안 보이면 지움 (카메라 시야 `view_angle_deg`, `view_range`는 실제 카메라와 맞추기)
 5. 카메라 밖이어도 `max_unseen_time`초(기본 10초) 동안 다시 안 보이면 지움 (유령 꼬깔 방지)
 6. 필드 밖에 보인 꼬깔은 버림
-7. UI **꼬깔 기억 지우기** 버튼: 한 번에 지우기 (고정도 풀림)
+7. UI **꼬깔 기억 지우기** 버튼: 한 번에 지우기 (내 위치가 크게 틀렸다가 다시 잡혔을 때)
 
-**꼬깔 고정** (꼬깔은 경기 중 안 움직이니까)
-- 로봇이 **멈춰 있을 때**(걷기 명령이 `still_time`초 동안 0) 본 위치만 모아서
-- `lock_hits`번(기본 10) 이상 보였고, 위치가 평균에서 `lock_spread`(기본 0.15m) 안에 다 모이면 그 평균 위치로 **고정**
-- 고정된 꼬깔은 안 보여도 안 지우고 위치도 안 바뀜, 최대 `max_locked`개(규정 3개)
-- 걸을 때(카메라 흔들림) 본 꼬깔은 후보로만 씀 → 유령 꼬깔이 고정되지 않음
-- 3개가 다 고정되면 그다음부터 들어오는 꼬깔은 **전부 무시**. 잘못 고정됐거나 꼬깔이 밀렸으면 **꼬깔 기억 지우기**
-- UI: 고정 = 진한 주황, 후보 = 주황 점선. 실제 경기에서는 Ready 위치에 멈춰 있을 때 고정됨
+꼬깔 위치를 **고정하지 않음**: 내 위치(특히 방향)가 틀린 순간에 고정되면 틀린 위치가 계속 남기 때문. 다시 보면 새 위치로 바뀜 (RoboCup Bit-Bots도 같은 방식)
 
 ## 필드 밖으로 안 나가기
 
@@ -175,7 +174,7 @@ ros2 param list /navigation_node
 ```
 
 - 실행 중 변경 가능: PID, 속도, 허용 오차, 도착 래치(`arrive_latch`), 크기·여유, 걷는 방식, 다른 로봇 피하기, ik_max_x/y/yaw (UI 탭에 있는 값 포함)
-- 시작할 때만: rate, field_length, field_width, grid_resolution, view_angle_deg, view_range, merge_dist, min_hits, forget_time, max_unseen_time, still_time, lock_hits, lock_spread, max_locked
+- 시작할 때만: rate, field_length, field_width, grid_resolution, view_angle_deg, view_range, merge_dist, min_hits, forget_time, max_unseen_time
 - 잘못된 값(음수 등)은 거부됨. 껐다 켜면 navigation_node.py 기본값으로 돌아감
 
 ## 테스트

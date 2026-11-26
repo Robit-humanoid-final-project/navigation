@@ -90,6 +90,7 @@ TUNABLE = {
     'cone_radius': 0.1,        # 꼬깔 14 x 14cm를 덮는 원 반지름 (m)
     'ball_radius': 0.07,       # 공 반지름 (지름 14cm) (m)
     'replan_period': 1.0,      # 몇 초마다 다시 계획
+    'keep_side_cost': 0.5,     # 지금 길에서 40cm 넘게 벗어난 칸의 추가 비용 (배). 꼬깔이 흔들려도 왼쪽/오른쪽이 안 바뀌게, 0 = 안 씀
     'require_localized': False,  # True: world_model.is_localized 가 false면 멈춤 (Localization 구현 후 켜기)
     # 우리 팀 다른 로봇 피하기
     'teammate_radius': 0.15,   # 다른 로봇 몸통 반지름 (m)
@@ -114,11 +115,6 @@ STARTUP_ONLY = {
     'min_hits': 2,             # 몇 번 봐야 진짜 꼬깔로 인정
     'forget_time': 2.0,        # 보여야 할 곳에서 이만큼 안 보이면 지움 (s)
     'max_unseen_time': 10.0,   # 카메라 밖이어도 이만큼 다시 안 보이면 지움 (s), 0 = 안 지움 (유령 꼬깔 방지)
-    # 꼬깔 고정 (꼬깔은 경기 중 안 움직임): 멈춰 있을 때 꾸준히 보인 꼬깔을 고정
-    'still_time': 1.0,         # 걷기 명령이 이만큼 0이면 "멈춰 있음" (s)
-    'lock_hits': 10,           # 멈춰서 이만큼 보이면 고정 (0 = 고정 안 함)
-    'lock_spread': 0.15,       # 그 위치들이 평균에서 이 거리 안에 다 모여야 고정 (m)
-    'max_locked': 3,           # 고정할 수 있는 꼬깔 수 (규정: 꼬깔 3개)
 }
 
 
@@ -137,10 +133,7 @@ class NavigationNode(Node):
             merge_dist=p('merge_dist'), min_hits=p('min_hits'), forget_time=p('forget_time'),
             view_half_angle=math.radians(p('view_angle_deg')) / 2.0, view_range=p('view_range'),
             max_unseen_time=p('max_unseen_time'),
-            field_half_x=p('field_length') / 2.0, field_half_y=p('field_width') / 2.0,   # 필드 밖 꼬깔 버림
-            lock_hits=p('lock_hits'), lock_spread=p('lock_spread'), max_locked=p('max_locked')))
-        self.still_time = p('still_time')
-        self.still_since = None    # 걷기 명령이 0이 된 시간 (멈춰 있는지 판단, 꼬깔 고정에 씀)
+            field_half_x=p('field_length') / 2.0, field_half_y=p('field_width') / 2.0))  # 필드 밖 꼬깔 버림
 
         self.robot = None          # 아직 위치를 못 받았으면 None
         self.goal = None           # 아직 목표를 못 받았으면 None
@@ -219,6 +212,7 @@ class NavigationNode(Node):
             max_side_near=p('max_side_near'), max_back=p('max_back'), latch=p('arrive_latch'))
         self.cone_radius = p('cone_radius')
         self.replan_period = p('replan_period')
+        self.keep_side_cost = p('keep_side_cost')
         self.require_localized = bool(self.get_parameter('require_localized').value)
         self.ball_radius = p('ball_radius')
         self.teammate_radius = p('teammate_radius')
@@ -302,13 +296,8 @@ class NavigationNode(Node):
             self.ball = ball
         # 꼬깔: 지금 보이는 것만 오니까 기억해서 씀
         now = self.get_clock().now().nanoseconds * 1e-9
-        still = self.still_since is not None and now - self.still_since >= self.still_time
-        locked = self.memory.num_locked()
-        if self.memory.update_field(self.robot, [(p.x, p.y) for p in msg.obstacles], now, still):
+        if self.memory.update_field(self.robot, [(p.x, p.y) for p in msg.obstacles], now):
             self.need_replan = True     # 꼬깔이 새로 보이거나 사라지면 바로 다시 계획
-        if self.memory.num_locked() > locked:
-            self.get_logger().info(f'꼬깔 고정: {self.memory.num_locked()}개'
-                                   + (' (다 고정됨: 이제 새 꼬깔은 무시)' if self.memory.all_locked() else ''))
         self.obstacles = [(x, y, self.cone_radius) for x, y in self.memory.confirmed()]
 
     def on_clear_cones(self, _msg):
@@ -316,7 +305,7 @@ class NavigationNode(Node):
         self.memory.clear()
         self.obstacles = []
         self.need_replan = True
-        self.get_logger().info('꼬깔 기억 지움 (고정도 풀림)')
+        self.get_logger().info('꼬깔 기억 지움')
 
     def on_teammate(self, msg):
         self.teammate = (msg.x, msg.y)
@@ -340,6 +329,10 @@ class NavigationNode(Node):
         mate = self.teammate_now()
         self.teammate_planned = mate
         # 다른 로봇 = 움직이는 꼬깔 (다른 로봇 때문에 길이 없으면 빼고 다시: 곧 비킬 테니까)
+        # 한 번 정한 쪽 유지: 목표가 거의 그대로면(30cm 안, 공 흔들림 포함) 지금 길 근처를 더 싸게
+        old = self.path
+        same_goal = old is not None and math.hypot(old[-1][0] - self.goal[0], old[-1][1] - self.goal[1]) < 0.3
+        self.planner.set_prefer(old if same_goal else None, self.keep_side_cost)
         self.path = plan_with_teammate(self.planner, self.robot[:2], self.goal[:2], self.obstacles,
                                        mate, self.teammate_radius,
                                        ball, self.ball_radius)
@@ -403,12 +396,6 @@ class NavigationNode(Node):
     def publish(self, cmd, status):
         # 팀 약속 (NavCommand.nav_enable: "True일 때만 Walk"):
         #   목표가 있을 때(nav_enable = true)만 master2ik를 보냄. false면 하나도 안 보냄 (멈추는 건 Taskplanner가 보냄)
-        # 멈춰 있는지 (걷기 명령이 0인 동안): 꼬깔 고정은 멈춰 있을 때 본 것만 씀 (카메라 흔들림 X)
-        moving = abs(cmd.linear.x) > 1e-3 or abs(cmd.linear.y) > 1e-3 or abs(cmd.angular.z) > 1e-3
-        if moving:
-            self.still_since = None
-        elif self.still_since is None:
-            self.still_since = self.get_clock().now().nanoseconds * 1e-9
         # nav_enable 이 false면 보행 명령(master2ik)을 절대 보내지 않음
         if self.nav_enable and self.goal is not None:
             fp = self.follower.p
@@ -457,13 +444,9 @@ class NavigationNode(Node):
         clear.action = Marker.DELETEALL
         arr.markers.append(clear)
 
-        # 기억한 꼬깔의 위험 범위 = 로봇 중심이 들어가면 안 되는 곳
-        #   고정된 꼬깔: 진한 주황 (ns 'inflated') / 아직 후보: 연한 주황 점선 (ns 'candidate')
-        for k, (ox, oy, locked) in enumerate(self.memory.items()):
-            if locked:
-                m = self.make_marker('inflated', k, Marker.CYLINDER, 1.0, 0.45, 0.0, 0.45)
-            else:
-                m = self.make_marker('candidate', k, Marker.CYLINDER, 1.0, 0.7, 0.3, 0.15)
+        # 기억한 꼬깔의 위험 범위 = 로봇 중심이 들어가면 안 되는 곳 (주황 원판)
+        for k, (ox, oy) in enumerate(self.memory.confirmed()):
+            m = self.make_marker('inflated', k, Marker.CYLINDER, 1.0, 0.45, 0.0, 0.45)
             m.pose.position.x, m.pose.position.y = float(ox), float(oy)
             m.scale.x = m.scale.y = 2.0 * self.planner.inflated_radius(self.cone_radius)
             m.scale.z = 0.01
