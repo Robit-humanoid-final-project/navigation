@@ -77,3 +77,27 @@ def test_arrive_latch():
     g.step((0.95, 0.0, 0.0), goal, 0.1)
     g.reset()
     assert not g.step((0.78, 0.0, 0.0), goal, 0.1).arrived
+
+
+def test_no_corner_cut_behind_cone():
+    # 목표가 꼬깔 바로 뒤: 경로 끝에서 목표로 직선으로 가면 꼬깔을 가로지름 -> 안 박고 돌아가야 함
+    pl = GridPlanner(-4.5, 4.5, -3.0, 3.0, resolution=0.1, robot_radius=0.15, margin=0.08, boundary_margin=0.2)
+    pl.set_obstacles([(0.0, 0.0, 0.1)])
+    assert not pl.segment_free((-0.5, 0.0), (0.6, 0.0))      # 꼬깔을 지나는 직선
+    assert pl.segment_free((-0.5, 0.5), (0.6, 0.5))          # 꼬깔 옆으로 지나는 직선
+    f = PathFollower(ControllerParams(), 5, line_free=pl.segment_free)
+    goal = (0.6, 0.0, 0.0)
+    x, y, th, dt, closest, path, arrived = -1.5, 0.0, 0.0, 0.05, 9.0, None, False
+    for k in range(800):
+        if k % 20 == 0:
+            path = pl.plan((x, y), goal[:2])
+        c = f.step((x, y, th), path, goal, dt)
+        if c.arrived:
+            arrived = True
+            break
+        x += (math.cos(th) * c.front - math.sin(th) * c.left) * dt
+        y += (math.sin(th) * c.front + math.cos(th) * c.left) * dt
+        th += c.turn * dt
+        closest = min(closest, math.hypot(x, y))
+    assert arrived
+    assert closest > 0.25        # 로봇 반지름 0.15 + 꼬깔 0.1 = 0.25 보다 가까우면 부딪힘

@@ -104,6 +104,21 @@ class GridPlanner:
         return all(math.hypot(x - ox, y - oy) >= self.inflated_radius(r)
                    for ox, oy, r in self.obstacles)
 
+    def segment_free(self, a, b, step=0.05):
+        """
+        a에서 b까지 직선으로 가도 안전한지 (꼬깔·공·다른 로봇 범위, 필드 선 띠를 안 지나는지)
+        - 격자 칸 크기 때문에 생기는 작은 오차(칸 절반)는 봐줌 (margin 안쪽이라 안 부딪힘)
+        - 로봇이 이미 그보다 깊이 범위 안이면: 지금보다 더 깊이 들어가지만 않으면 OK (빠져나가는 중)
+        """
+        limit = min(self.clearance(a[0], a[1]), -0.5 * self.res)
+        n = max(1, int(math.ceil(math.hypot(b[0] - a[0], b[1] - a[1]) / step)))
+        for k in range(1, n + 1):
+            x = a[0] + (b[0] - a[0]) * k / n
+            y = a[1] + (b[1] - a[1]) * k / n
+            if self.clearance(x, y) < limit:
+                return False
+        return True
+
     # ---------------- A-star ----------------
     def plan(self, start_xy, goal_xy):
         """

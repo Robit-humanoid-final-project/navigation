@@ -282,9 +282,14 @@ class PathFollower:
     - 가장 가까운 경로 점을 찾고, 거기서 carrot_points개 앞의 점을 임시 목표로 삼는다
     - 당근 쪽으로 앞걸음 위주로 걷는다 (많이 벗어나 있으면 먼저 제자리 회전)
     - 당근이 경로 끝에 닿으면 GoalController로 최종 목표에 정확히 도착하고 방향을 맞춘다
+    - line_free(a, b)를 주면: 로봇에서 당근(또는 목표)까지 직선이 꼬깔 범위를 지나는지 검사해서
+      지나면 당근을 한 칸씩 가까이 당긴다 (경로가 꺾인 곳에서 모서리를 깎아 꼬깔을 박지 않게)
+      목표까지 직선이 안전할 때만 목표로 곧장 간다 (목표가 꼬깔 바로 뒤면 경로를 따라 돌아감)
+      그리고 지금 걷는 방향으로 1초 동안 갔을 때 꼬깔 범위에 들어가면 걷지 말고 먼저 돈다
+      (휴머노이드는 몸이 향한 쪽으로 걸어서, 당근 쪽으로 다 돌기 전에 걸으면 꼬깔 쪽으로 휘어 들어감)
     """
 
-    def __init__(self, params=None, carrot_points=5):
+    def __init__(self, params=None, carrot_points=5, line_free=None):
         self.p = params or ControllerParams()
         self.final = GoalController(self.p)      # 경로 끝: 최종 목표에 정확히 도착
         self.front_pid = self.p.move_pid()       # 경로 중간: 당근 따라가기 (I 안 씀)
@@ -292,6 +297,7 @@ class PathFollower:
         self.turn_pid = self.p.turn_pid()
         self.walk = ForwardWalk(self.p)
         self.carrot_points = carrot_points       # 몇 개 앞의 점을 당근으로 쓸지 (m가 아니라 개수)
+        self.line_free = line_free               # (a, b) -> 직선으로 가도 안전한지 (None = 검사 안 함)
         self.on_carrot = False
 
     def reset(self):
@@ -313,14 +319,15 @@ class PathFollower:
 
         # 2. 몇 개 앞의 점 = 당근
         c = nearest + self.carrot_points
-        if c >= n - 1:
+        free = self.line_free or (lambda a, b: True)
+        if c >= n - 1 and free((rx, ry), goal[:2]):
             # 당근이 경로 끝에 닿음 -> 최종 목표로 정확히 이동 + 방향 맞추기
             if self.on_carrot:
                 self.final.reset()
                 self.on_carrot = False
             cmd = self.final.step(robot, goal, dt)
             cmd.remain = remain
-            return cmd
+            return self.check_motion(robot, cmd, goal[:2])
 
         # 3. 당근을 로봇 기준으로 바꿔서 앞걸음 위주로 따라가기 (P + D)
         #    당근은 항상 조금 앞에 있어서 오차가 0이 되지 않으므로 I는 쓰지 않음
@@ -330,6 +337,29 @@ class PathFollower:
             self.turn_pid.reset()
             self.walk.reset()
             self.on_carrot = True
+        # 당근까지 직선이 꼬깔 범위를 지나면 당근을 한 칸씩 가까이 당김 (최소 바로 다음 점)
+        c = min(c, n - 1)
+        while c > nearest + 1 and not free((rx, ry), path[c]):
+            c -= 1
+        c = min(max(c, nearest + 1), n - 1)
         front, left = field_to_robot(robot, path[c][0], path[c][1])
         f, l, t = self.walk.step(front, left, self.front_pid, self.left_pid, self.turn_pid, dt, False)
-        return Command(front=f, left=l, turn=t, remain=remain, carrot=tuple(path[c]))
+        return self.check_motion(robot, Command(front=f, left=l, turn=t, remain=remain, carrot=tuple(path[c])),
+                                 path[c])
+
+    def check_motion(self, robot, cmd, target, look_time=1.0):
+        """
+        지금 명령(앞, 옆)대로 look_time 초 걸었을 때 꼬깔 범위에 들어가면 걷지 말고 돌기만
+        (걷는 거리는 target 까지 거리보다 길게 안 봄. 회전이 거의 없으면 멈춰 버리지 않게 그대로 둠)
+        """
+        if self.line_free is None or (cmd.front == 0.0 and cmd.left == 0.0) or abs(cmd.turn) < 0.05:
+            return cmd
+        rx, ry, yaw = robot
+        dist = min(math.hypot(cmd.front, cmd.left) * look_time,
+                   math.hypot(target[0] - rx, target[1] - ry))
+        speed = math.hypot(cmd.front, cmd.left)
+        dx = (math.cos(yaw) * cmd.front - math.sin(yaw) * cmd.left) / speed * dist
+        dy = (math.sin(yaw) * cmd.front + math.cos(yaw) * cmd.left) / speed * dist
+        if not self.line_free((rx, ry), (rx + dx, ry + dy)):
+            cmd.front, cmd.left = 0.0, 0.0
+        return cmd

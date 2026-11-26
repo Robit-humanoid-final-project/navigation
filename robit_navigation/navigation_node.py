@@ -228,7 +228,8 @@ class NavigationNode(Node):
         self.ik_max = (p('ik_max_x'), p('ik_max_y'), p('ik_max_yaw'))
         self.obstacles = [(x, y, self.cone_radius) for x, y, _ in self.obstacles]
         self.default_tol = (cp.tol_dist, cp.tol_yaw)
-        self.follower = PathFollower(cp, int(self.get_parameter('carrot_points').value))
+        self.follower = PathFollower(cp, int(self.get_parameter('carrot_points').value),
+                                     line_free=lambda a, b: self.planner.segment_free(a, b))
         self.set_tolerance(*self.tol) if hasattr(self, 'tol') else None
         hl, hw = self.field_l / 2.0, self.field_w / 2.0
         self.planner = GridPlanner(-hl, hl, -hw, hw, resolution=self.res,
