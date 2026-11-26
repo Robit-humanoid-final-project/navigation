@@ -56,3 +56,24 @@ def test_near_uses_side_step():
     assert max(abs(le) for _, _, le, _ in log) > p.max_side          # 가까우면 옆걸음 씀
     assert all(abs(le) <= p.max_side_near + 1e-9 for _, _, le, _ in log)
     assert abs(pose[2]) < p.tol_yaw
+
+
+def test_arrive_latch():
+    # 도착 래치: 한 번 도착하면 위치가 조금 흔들려도(허용 범위 2배 안) 다시 안 움직임
+    from robit_navigation.nav_core import GoalController
+    p = ControllerParams(tol_dist=0.15, tol_yaw=math.radians(15), latch=2.0)
+    g = GoalController(p)
+    goal = (1.0, 0.0, 0.0)
+    assert g.step((0.95, 0.0, 0.0), goal, 0.1).arrived                 # 5cm: 도착
+    c = g.step((0.78, 0.05, math.radians(20)), goal, 0.1)              # 22cm, 20도 흔들림 (허용 범위 밖, 2배 안)
+    assert c.arrived and c.front == c.left == c.turn == 0.0            # 그래도 계속 도착, 안 움직임
+    c = g.step((0.6, 0.0, 0.0), goal, 0.1)                              # 40cm: 2배(30cm) 넘게 밀림
+    assert not c.arrived and c.front > 0.0                              # 다시 걸어감
+    # 래치를 끄면(0) 허용 범위만 벗어나도 다시 움직임
+    g2 = GoalController(ControllerParams(tol_dist=0.15, tol_yaw=math.radians(15), latch=0.0))
+    assert g2.step((0.95, 0.0, 0.0), goal, 0.1).arrived
+    assert not g2.step((0.78, 0.0, 0.0), goal, 0.1).arrived
+    # 새 목표(reset)면 래치 풀림
+    g.step((0.95, 0.0, 0.0), goal, 0.1)
+    g.reset()
+    assert not g.step((0.78, 0.0, 0.0), goal, 0.1).arrived

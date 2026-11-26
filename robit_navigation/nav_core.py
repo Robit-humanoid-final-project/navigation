@@ -121,6 +121,7 @@ class ControllerParams:
     max_side: float = 0.05         # 멀 때 옆걸음 최대 (m/s)
     max_side_near: float = 0.15    # 가까울 때 옆걸음 최대 (m/s)
     max_back: float = 0.05         # 뒷걸음 최대 (m/s)
+    latch: float = 2.0             # 도착 래치: 한 번 도착하면 허용 범위의 이 배수를 벗어나기 전까지 계속 도착 (0 = 안 씀)
 
     def move_pid(self):
         return Pid(self.kp_move, self.ki_move, self.kd_move, self.i_limit_move, self.d_alpha)
@@ -199,6 +200,9 @@ class GoalController:
       FAR   (near_dist 보다 멂): 앞걸음 위주로 목표 점을 향해 걷기
       NEAR  (near_dist 안)     : 마지막 방향으로 몸을 돌리면서 옆걸음·작은 뒷걸음으로 위치 맞추기
       ALIGN (위치 도착)         : 제자리에서 마지막 방향 맞추기
+    도착 래치: 한 번 도착하면 위치가 조금 흔들려도 다시 안 움직임 (허용 범위의 latch 배를 벗어날 때만 다시)
+      -> 랜드마크가 안 보여 내 위치가 흔들릴 때 목표 근처에서 잔발·제자리 회전을 반복하지 않게
+         (RoboCup Bit-Bots reached_goal 의 latching, ROS latch_xy_goal_tolerance 와 같은 생각)
     """
 
     def __init__(self, params=None):
@@ -208,8 +212,14 @@ class GoalController:
         self.turn_pid = self.p.turn_pid()
         self.walk = ForwardWalk(self.p)
         self.mode = None
+        self.latched = False      # 도착한 뒤 계속 도착 상태인지 (새 목표가 오면 reset 으로 풂)
 
     def reset(self):
+        """새 목표: PID 초기화 + 도착 래치 풂"""
+        self.reset_control()
+        self.latched = False
+
+    def reset_control(self):
         self.front_pid.reset()
         self.left_pid.reset()
         self.turn_pid.reset()
@@ -237,10 +247,14 @@ class GoalController:
         final_turn = normalize_angle(gyaw - robot[2])
 
         # 도착 판단: 거리와 방향 둘 다 허용 범위 안
-        if dist < p.tol_dist and abs(final_turn) < p.tol_yaw:
+        #   이미 도착했으면(래치) 허용 범위의 latch 배 안이면 계속 도착 (위치 흔들림으로 다시 움직이지 않게)
+        k = p.latch if (self.latched and p.latch > 0.0) else 1.0
+        if dist < k * p.tol_dist and abs(final_turn) < k * p.tol_yaw:
             cmd.arrived = True        # 정지 명령 (front, left, turn 모두 0)
-            self.reset()
+            self.reset_control()
+            self.latched = True
             return cmd
+        self.latched = False          # 많이 밀렸음: 다시 움직여서 맞춤
 
         if dist >= p.near_dist:
             # 멀다: 목표 쪽으로 몸을 돌리고 앞으로 (I로 미끄러짐 때문에 남는 거리까지 없앰)

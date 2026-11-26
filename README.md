@@ -86,6 +86,12 @@ ros2 launch robit_navigation robot.launch.py gui:=false       # UI 없이 (Taskp
 | 목표 0.3m(`near_dist`) 안 | 마지막 방향을 보면서 옆걸음(`max_side_near` 0.15)·작은 뒷걸음(`max_back` 0.05)으로 맞춤 |
 | 위치 도착 | 제자리에서 마지막 방향 맞추기 → ARRIVED |
 
+**도착 판단**
+- 목표에서 `tol_dist`(기본 0.15m) 안, 방향 차이 `tol_yaw_deg`(기본 15도) 안이면 도착
+- **도착하면 끝** (`arrive_latch` 2배): 한 번 도착하면 위치가 흔들려도 허용 범위의 2배(30cm, 30도)를 넘기 전까지는 다시 안 움직임
+  → 랜드마크가 안 보여서 내 위치가 조금씩 튀어도 목표 근처에서 잔발로 왔다 갔다 하지 않음
+- 정말로 밀려서 2배를 넘으면 다시 걸어감. 새 목표가 오면 래치 풀림. `arrive_latch` 0 = 래치 끔
+
 ## 꼬깔 기억
 
 Localization(`world_model`)은 지금 카메라에 보이는 꼬깔만 필드 기준으로 알려줌. 그대로 쓰면 고개를 돌리는 순간 꼬깔이 사라짐. 그래서:
@@ -159,11 +165,11 @@ Localization(`world_model`)은 지금 카메라에 보이는 꼬깔만 필드 �
 ## 실행 중에 튜닝 값 바꾸기
 
 ```bash
-ros2 param set /navigation_node tol_yaw_deg 3.0
+ros2 param set /navigation_node tol_yaw_deg 10.0
 ros2 param list /navigation_node
 ```
 
-- 실행 중 변경 가능: PID, 속도, 허용 오차, 크기·여유, 걷는 방식, 다른 로봇 피하기, ik_max_x/y/yaw (UI 탭에 있는 값 포함)
+- 실행 중 변경 가능: PID, 속도, 허용 오차, 도착 래치(`arrive_latch`), 크기·여유, 걷는 방식, 다른 로봇 피하기, ik_max_x/y/yaw (UI 탭에 있는 값 포함)
 - 시작할 때만: rate, field_length, field_width, grid_resolution, view_angle_deg, view_range, merge_dist, min_hits, forget_time, max_unseen_time, still_time, lock_hits, lock_spread, max_locked
 - 잘못된 값(음수 등)은 거부됨. 껐다 켜면 navigation_node.py 기본값으로 돌아감
 

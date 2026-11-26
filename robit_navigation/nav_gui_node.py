@@ -77,6 +77,7 @@ PATH_PARAMS = [
     ('tol_dist', '허용 거리 m', 0, 1, 0.01, 2),
     ('tol_yaw_deg', '허용 각도 도', 0, 90, 1, 1), ('carrot_points', '당근 (점 개수)', 1, 30, 1, 0),
     ('boundary_margin', '선 안쪽 여유 m', 0, 1, 0.05, 2), ('center_margin', '가운데선 여유 m', 0, 1, 0.05, 2),
+    ('arrive_latch', '도착 래치 (배)', 0, 5, 0.5, 1),
 ]
 
 READY_ON = 'background: #c62828; border: 3px solid #ffe14d;'    # Ready 켜짐 (빨강)

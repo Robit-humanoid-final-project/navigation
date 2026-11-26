@@ -72,8 +72,9 @@ TUNABLE = {
     'd_alpha': 0.5,            # D 부드럽게 (0~1, 작을수록 부드러움)
     'max_move': 0.3,           # m/s
     'max_turn': 1.0,           # rad/s
-    'tol_dist': 0.10,          # 기본 허용 거리 (m), NavCommand.pos_tolerance 가 0 이하일 때
-    'tol_yaw_deg': 10.0,       # 기본 허용 각도 (도), NavCommand.theta_tolerance 가 0 이하일 때
+    'tol_dist': 0.15,          # 기본 허용 거리 (m), NavCommand.pos_tolerance 가 0 이하일 때
+    'tol_yaw_deg': 15.0,       # 기본 허용 각도 (도), NavCommand.theta_tolerance 가 0 이하일 때
+    'arrive_latch': 2.0,       # 도착 래치: 한 번 도착하면 허용 범위의 이 배수를 벗어나기 전까지 안 움직임 (0 = 안 씀)
     # 앞걸음 위주 (휴머노이드는 옆걸음·뒷걸음이 느리고 잘 넘어짐)
     'turn_in_place_deg': 30.0, # 가려는 쪽이 이 각도보다 벗어나면 제자리 회전
     'walk_again_deg': 15.0,    # 이 각도보다 작아지면 다시 걷기
@@ -215,7 +216,7 @@ class NavigationNode(Node):
             turn_in_place=math.radians(p('turn_in_place_deg')),
             walk_again=math.radians(p('walk_again_deg')),
             near_dist=p('near_dist'), max_side=p('max_side'),
-            max_side_near=p('max_side_near'), max_back=p('max_back'))
+            max_side_near=p('max_side_near'), max_back=p('max_back'), latch=p('arrive_latch'))
         self.cone_radius = p('cone_radius')
         self.replan_period = p('replan_period')
         self.require_localized = bool(self.get_parameter('require_localized').value)
