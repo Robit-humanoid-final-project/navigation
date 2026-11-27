@@ -1,7 +1,7 @@
 """계산 부분 확인: 손으로 푼 답, 좌표 변환, PID, 꼬깔 기억 (실행: python3 -m pytest test)"""
 import math
 
-from robit_navigation.nav_core import Pid, field_to_robot, normalize_angle, path_remaining, robot_to_field
+from robit_navigation.nav_core import Pid, field_to_robot, normalize_angle, path_remaining, read_walking_parm, robot_to_field
 from robit_navigation.obstacle_memory import ObstacleMemory, ObstacleMemoryParams
 from robit_navigation.astar import GridPlanner
 
@@ -146,3 +146,22 @@ def test_keep_same_side():
     pl.set_obstacles([(0.0, 0.0, 0.1)] + [(0.0, sign * 0.45 * k, 0.1) for k in range(1, 7)])
     pl.set_prefer(path, 0.5)
     assert side(pl.plan(start, goal)) != first
+
+
+def test_read_walking_parm(tmp_path):
+    # 보행 담당 yaml (11/26) 그대로
+    f = tmp_path / 'walking_parm.yaml'
+    f.write_text("""ros__parameters:
+    # Navigation
+    Nav_test_X: 30.00
+    Nav_test_side_R: -10.00
+    Nav_test_side_L: 10.00
+    Nav_test_Yaw_R: -5.00
+    Nav_test_Yaw_L: 5.00
+    Ta_test_X_F: 5.00
+""")
+    assert read_walking_parm(str(f)) == {'ik_max_x': 30.0, 'ik_max_y': 10.0, 'ik_max_yaw': 5.0}
+    # 노드 이름 밑에 있어도 찾음
+    f.write_text("/**:\n  ros__parameters:\n    Nav_test_X: 20\n    Nav_test_side_L: 8\n    Nav_test_Yaw_L: 4\n")
+    assert read_walking_parm(str(f)) == {'ik_max_x': 20.0, 'ik_max_y': 8.0, 'ik_max_yaw': 4.0}
+    assert read_walking_parm(str(tmp_path / 'none.yaml')) is None      # 파일 없음

@@ -160,6 +160,39 @@ def to_walk(front, left, turn, max_move, max_side, max_turn, ik_max_x, ik_max_y,
     return x, y, yaw, flag
 
 
+def read_walking_parm(path):
+    """
+    보행 담당이 만든 walking_parm.yaml 에서 내비용 보행 최대값 읽기
+      Nav_test_X -> ik_max_x, Nav_test_side_L -> ik_max_y, Nav_test_Yaw_L -> ik_max_yaw
+    (L = 왼쪽 = +, R = 오른쪽 = - 라서 우리 방향(왼쪽 +, 반시계 +)과 같음. 크기만 씀)
+    반환: {'ik_max_x': .., 'ik_max_y': .., 'ik_max_yaw': ..}, 파일이 없거나 값이 없으면 None
+    """
+    import yaml
+    try:
+        with open(path) as f:
+            data = yaml.safe_load(f)
+    except (OSError, yaml.YAMLError):
+        return None
+
+    def find(d):
+        # ros__parameters 가 몇 단계 안에 있어도 찾기
+        if isinstance(d, dict):
+            if 'Nav_test_X' in d:
+                return d
+            for v in d.values():
+                r = find(v)
+                if r is not None:
+                    return r
+        return None
+    d = find(data)
+    try:
+        return {'ik_max_x': abs(float(d['Nav_test_X'])),
+                'ik_max_y': abs(float(d.get('Nav_test_side_L', d.get('Nav_test_side_R')))),
+                'ik_max_yaw': abs(float(d.get('Nav_test_Yaw_L', d.get('Nav_test_Yaw_R'))))}
+    except (TypeError, KeyError, ValueError):
+        return None
+
+
 class ForwardWalk:
     """
     앞걸음 위주로 한 점을 향해 걷기

@@ -28,7 +28,7 @@
                  x_length, y_length, yaw = 내 속도를 비율로 바꾼 값 (to_walk)
                    예) 앞 속도가 max_move 면 x_length = ik_max_x, 절반이면 ik_max_x 의 절반
                  flag = 1 걷기, 0 멈춤
-                 (ik_max_x, ik_max_y, ik_max_yaw 는 임시 값: 보행 담당 답 오면 바꾸기)
+                 (ik_max_x, ik_max_y, ik_max_yaw = 보행 yaml(walking_parm.yaml)의 Nav_test 값, 시작할 때 읽음)
   master2ik 는 nav_enable = true(목표 있음)일 때만 보냄 (팀 약속 "True일 때만 Walk").
                  false면 하나도 안 보냄 -> 로봇 멈추기는 Taskplanner(또는 UI Stop)가 master2ik flag 0 으로
   nav_path       nav_msgs/Path                    A-star 경로 (화면 표시용)
@@ -41,10 +41,12 @@
   ros2 param set /navigation_node ki_move 0.5
 """
 import math
+import os
 
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.parameter import Parameter
 from rcl_interfaces.msg import SetParametersResult
 from geometry_msgs.msg import Point, Pose2D, PoseStamped, Twist
 from std_msgs.msg import Empty
@@ -55,7 +57,7 @@ from humanoid_interfaces.msg import Master2IkMsg, NavCommand, NavFeedback, World
 from robit_navigation.astar import GridPlanner
 from robit_navigation.teammate import (SpeedEstimator, look_ahead_point, plan_with_teammate,
                                       should_yield, too_close)
-from robit_navigation.nav_core import ControllerParams, PathFollower, path_remaining, to_walk
+from robit_navigation.nav_core import ControllerParams, PathFollower, path_remaining, read_walking_parm, to_walk
 from robit_navigation.obstacle_memory import ObstacleMemory, ObstacleMemoryParams
 
 FRAME = 'map'
@@ -97,10 +99,11 @@ TUNABLE = {
     'yield_to_teammate': False,   # True: 다른 로봇이 가까이서 움직이면 멈춰서 양보 (한 로봇만 True)
     'yield_dist': 0.9,         # 이 거리 안에서 양보 (m)
     'stop_dist': 0.45,         # 다른 로봇이 바로 앞 이 거리 안이면 안전 정지 (m)
-    # 보행(master2ik)으로 보낼 최대값 (임시 값, 보행 담당 답 오면 바꾸기). 음수로 넣으면 방향 반대
-    'ik_max_x': 25.0,          # 앞 속도가 max_move 일 때 x_length
-    'ik_max_y': 25.0,          # 옆 속도가 max_side_near 일 때 y_length
-    'ik_max_yaw': 10.0,        # 회전 속도가 max_turn 일 때 yaw
+    # 보행(master2ik)으로 보낼 최대값. 시작할 때 walking_parm_file(보행 yaml)이 있으면 그 값으로 바뀜
+    # (아래는 yaml이 없을 때 쓰는 값 = 11/26 보행 yaml 값). 음수로 넣으면 방향 반대
+    'ik_max_x': 30.0,          # 앞 속도가 max_move 일 때 x_length       (yaml Nav_test_X)
+    'ik_max_y': 10.0,          # 옆 속도가 max_side_near 일 때 y_length  (yaml Nav_test_side_L)
+    'ik_max_yaw': 5.0,         # 회전 속도가 max_turn 일 때 yaw          (yaml Nav_test_Yaw_L)
 }
 # 시작할 때만 읽는 값
 STARTUP_ONLY = {
@@ -115,6 +118,8 @@ STARTUP_ONLY = {
     'min_hits': 2,             # 몇 번 봐야 진짜 꼬깔로 인정
     'forget_time': 2.0,        # 보여야 할 곳에서 이만큼 안 보이면 지움 (s)
     'max_unseen_time': 10.0,   # 카메라 밖이어도 이만큼 다시 안 보이면 지움 (s), 0 = 안 지움 (유령 꼬깔 방지)
+    # 보행 담당 yaml (github walking_parm). 없으면 위 ik_max 값 사용
+    'walking_parm_file': '~/colcon_ws/src/walking_parm/walking_parm.yaml',
 }
 
 
@@ -125,6 +130,17 @@ class NavigationNode(Node):
         for name, default in {**TUNABLE, **STARTUP_ONLY}.items():
             self.declare_parameter(name, default)
         p = lambda name: self.get_parameter(name).value
+
+        # 보행 yaml 에서 보행 최대값 읽기
+        path = os.path.expanduser(p('walking_parm_file'))
+        walk = read_walking_parm(path)
+        if walk:
+            self.set_parameters([Parameter(k, value=v) for k, v in walk.items()])
+            self.get_logger().info(f'보행 yaml 읽음: 앞 {walk["ik_max_x"]:g}, 옆 {walk["ik_max_y"]:g}, '
+                                   f'회전 {walk["ik_max_yaw"]:g} ({path})')
+        else:
+            self.get_logger().warn(f'보행 yaml 없음 ({path}) -> 기본값 앞 {p("ik_max_x"):g}, '
+                                   f'옆 {p("ik_max_y"):g}, 회전 {p("ik_max_yaw"):g}')
 
         self.rate = p('rate')
         self.field_l, self.field_w = p('field_length'), p('field_width')

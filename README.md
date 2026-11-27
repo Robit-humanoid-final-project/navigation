@@ -59,7 +59,11 @@ ros2 launch robit_navigation robot.launch.py gui:=false       # UI 없이 (Taskp
 - **Taskplanner와 같이 돌릴 때는 UI 버튼을 누르지 말기** (UI도 `nav_command`를 보내서 명령이 섞임)
 - 내비게이션은 `nav_enable = false`면 보행 명령을 안 보냄 (팀 약속). UI 없이 멈출 때는 보행에 직접:
   `ros2 topic pub --once master2ik humanoid_interfaces/msg/Master2IkMsg "{flag: 0.0}"`
-- 방향이 반대면 `ik_max_x`, `ik_max_y`, `ik_max_yaw`를 음수로 (`ros2 param set /navigation_node ik_max_x -25.0`)
+- **보행 값**: 시작할 때 보행 담당 yaml(`~/colcon_ws/src/walking_parm/walking_parm.yaml`)에서 `Nav_test_X`, `Nav_test_side_L`, `Nav_test_Yaw_L`을 읽어 `ik_max_x`, `ik_max_y`, `ik_max_yaw`로 씀
+  - yaml 받기: `cd ~/colcon_ws/src && git clone https://github.com/Robit-humanoid-final-project/walking_parm.git`
+  - yaml이 없으면 기본값(앞 30, 옆 10, 회전 5) 사용. 시작 로그에 어떤 값을 쓰는지 나옴
+  - 다른 위치면 `walking_parm_file` 파라미터로 경로 지정
+- 방향이 반대면 `ik_max_x`, `ik_max_y`, `ik_max_yaw`를 음수로 (`ros2 param set /navigation_node ik_max_x -30.0`)
 
 ## Navigation UI
 
