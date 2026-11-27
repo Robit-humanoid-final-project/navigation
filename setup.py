@@ -13,6 +13,7 @@ setup(
         ('share/' + package_name, ['package.xml']),
         ('share/' + package_name + '/launch', glob('launch/*.launch.py')),
         ('share/' + package_name + '/resource', ['resource/field_map.png']),   # UI 필드 그림 (Localization 맵)
+        ('share/' + package_name + '/config', glob('config/*.yaml')),          # 보행 값 (보행 담당 walking_parm.yaml)
     ],
     install_requires=['setuptools'],
     zip_safe=True,

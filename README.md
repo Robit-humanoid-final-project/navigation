@@ -17,6 +17,7 @@ Ubuntu 24.04 + ROS2 Jazzy 기준.
 | `robit_navigation/nav_gui_node.py` | ❌ 확인용 | Navigation UI (Localization UI와 같은 배치): 필드 보기, 목표 주기, 튜닝 |
 | `launch/robot.launch.py` | | 실제 로봇에서 내비게이션 + UI 실행 |
 | `resource/field_map.png` | | UI 필드 그림 (Localization 맵) |
+| `config/walking_parm.yaml` | | 보행 담당 yaml (내비는 Nav_test 값을 보행 최대값으로 씀) |
 | `test/` | | 계산 확인 테스트 (`python3 -m pytest test`) |
 
 ## 토픽 (팀 메시지 humanoid_interfaces)
@@ -59,10 +60,10 @@ ros2 launch robit_navigation robot.launch.py gui:=false       # UI 없이 (Taskp
 - **Taskplanner와 같이 돌릴 때는 UI 버튼을 누르지 말기** (UI도 `nav_command`를 보내서 명령이 섞임)
 - 내비게이션은 `nav_enable = false`면 보행 명령을 안 보냄 (팀 약속). UI 없이 멈출 때는 보행에 직접:
   `ros2 topic pub --once master2ik humanoid_interfaces/msg/Master2IkMsg "{flag: 0.0}"`
-- **보행 값**: 시작할 때 보행 담당 yaml(`~/colcon_ws/src/walking_parm/walking_parm.yaml`)에서 `Nav_test_X`, `Nav_test_side_L`, `Nav_test_Yaw_L`을 읽어 `ik_max_x`, `ik_max_y`, `ik_max_yaw`로 씀
-  - yaml 받기: `cd ~/colcon_ws/src && git clone https://github.com/Robit-humanoid-final-project/walking_parm.git`
+- **보행 값**: 시작할 때 `config/walking_parm.yaml`(보행 담당 파일, github walking_parm 복사본)에서 `Nav_test_X`, `Nav_test_side_L`, `Nav_test_Yaw_L`을 읽어 `ik_max_x`, `ik_max_y`, `ik_max_yaw`로 씀
+  - 보행 값이 바뀌면 `config/walking_parm.yaml`을 새 파일로 바꾸고 **colcon build** (config는 설치 폴더로 복사되는 파일이라 빌드해야 적용)
   - yaml이 없으면 기본값(앞 30, 옆 10, 회전 5) 사용. 시작 로그에 어떤 값을 쓰는지 나옴
-  - 다른 위치면 `walking_parm_file` 파라미터로 경로 지정
+  - 다른 파일을 쓰려면 `walking_parm_file` 파라미터로 경로 지정
 - 방향이 반대면 `ik_max_x`, `ik_max_y`, `ik_max_yaw`를 음수로 (`ros2 param set /navigation_node ik_max_x -30.0`)
 
 ## Navigation UI

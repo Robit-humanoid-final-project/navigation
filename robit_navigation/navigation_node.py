@@ -47,6 +47,7 @@ import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from rclpy.parameter import Parameter
+from ament_index_python.packages import get_package_share_directory
 from rcl_interfaces.msg import SetParametersResult
 from geometry_msgs.msg import Point, Pose2D, PoseStamped, Twist
 from std_msgs.msg import Empty
@@ -118,8 +119,8 @@ STARTUP_ONLY = {
     'min_hits': 2,             # 몇 번 봐야 진짜 꼬깔로 인정
     'forget_time': 2.0,        # 보여야 할 곳에서 이만큼 안 보이면 지움 (s)
     'max_unseen_time': 10.0,   # 카메라 밖이어도 이만큼 다시 안 보이면 지움 (s), 0 = 안 지움 (유령 꼬깔 방지)
-    # 보행 담당 yaml (github walking_parm). 없으면 위 ik_max 값 사용
-    'walking_parm_file': '~/colcon_ws/src/walking_parm/walking_parm.yaml',
+    # 보행 담당 yaml. '' = 우리 패키지 config/walking_parm.yaml. 없으면 위 ik_max 값 사용
+    'walking_parm_file': '',
 }
 
 
@@ -132,7 +133,8 @@ class NavigationNode(Node):
         p = lambda name: self.get_parameter(name).value
 
         # 보행 yaml 에서 보행 최대값 읽기
-        path = os.path.expanduser(p('walking_parm_file'))
+        path = os.path.expanduser(p('walking_parm_file')) or os.path.join(
+            get_package_share_directory('robit_navigation'), 'config', 'walking_parm.yaml')
         walk = read_walking_parm(path)
         if walk:
             self.set_parameters([Parameter(k, value=v) for k, v in walk.items()])
