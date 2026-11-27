@@ -31,6 +31,7 @@ class GridPlanner:
         self.blocked = self.empty_map()
         self.last_expanded = 0                      # 마지막 탐색에서 확장한 칸 수 (확인용)
         self.prefer, self.prefer_cost = None, 0.0     # 지금 길 근처 칸 (set_prefer)
+        self.goal_moved = False                     # 마지막 계획에서 목표가 막혀서 가까운 곳으로 바꿨는지
 
     # ---------------- 좌표 <-> 칸 번호 ----------------
     def to_cell(self, x, y):
@@ -142,6 +143,18 @@ class GridPlanner:
                         self.prefer.add((i, j))
 
     # ---------------- A-star ----------------
+    def nearest_free(self, cell, max_dist=1.0):
+        """cell 에서 max_dist(m) 안의 갈 수 있는 칸 중 가장 가까운 칸 (없으면 None)"""
+        k = int(math.ceil(max_dist / self.res))
+        best, best_d = None, max_dist + 1e-9
+        for i in range(cell[0] - k, cell[0] + k + 1):
+            for j in range(cell[1] - k, cell[1] + k + 1):
+                if self.inside(i, j) and not self.blocked[i][j]:
+                    d = math.hypot(i - cell[0], j - cell[1]) * self.res
+                    if d < best_d:
+                        best, best_d = (i, j), d
+        return best
+
     def plan(self, start_xy, goal_xy):
         """
         start_xy, goal_xy: (x, y) 필드 기준
@@ -151,10 +164,17 @@ class GridPlanner:
         g = self.to_cell(*goal_xy)
         # 출발점이 필드 밖이면 (세팅 위치는 라인보다 뒤에 둠) 가장 가까운 필드 안 칸에서 시작
         s = (min(max(s[0], 0), self.nx - 1), min(max(s[1], 0), self.ny - 1))
+        self.goal_moved = False
         if not self.inside(*g):
             return None              # 목표가 필드 밖
         if self.blocked[g[0]][g[1]]:
-            return None              # 목표가 꼬깔 범위 안 -> 갈 수 없음
+            # 목표가 꼬깔 범위 안 (꼬깔 위치가 잠깐 흔들려서 겹친 것일 수도 있음)
+            # -> 바로 포기하지 않고 목표에서 가장 가까운 갈 수 있는 칸으로 감
+            g = self.nearest_free(g)
+            if g is None:
+                return None          # 근처에 갈 수 있는 곳이 없음
+            goal_xy = self.to_point(*g)
+            self.goal_moved = True
 
         def h(c):                    # h: 목표까지 직선거리 (어림값)
             return math.hypot(c[0] - g[0], c[1] - g[1]) * self.res

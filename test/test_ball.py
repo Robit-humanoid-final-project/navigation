@@ -59,9 +59,23 @@ def test_without_avoidance_pushes_ball():
     assert gap < 0.0
 
 
-def test_goal_inside_ball_zone_is_blocked():
-    # 공 바로 뒤 0.3m(킥 자리)는 공 위험 범위(0.37m) 안이라 못 감 -> 그 안쪽은 Vision이 맡음
-    assert plan_path(make_planner(), (-1.0, 0.0), (1.7, 0.0), [], (2.0, 0.0), BALL_R) is None
+def test_goal_inside_ball_zone_goes_to_edge():
+    # 공 바로 뒤 0.3m(킥 자리)는 공 위험 범위(0.37m) 안이라 못 감
+    # -> 공 범위 바로 바깥(목표에서 가장 가까운 곳)까지 가고, 그 안쪽은 Vision이 맡음
+    pl = make_planner()
+    path = plan_path(pl, (-1.0, 0.0), (1.7, 0.0), [], (2.0, 0.0), BALL_R)
+    assert path is not None and pl.goal_moved
+    assert math.hypot(path[-1][0] - 2.0, path[-1][1]) >= BALL_R - 0.05     # 공 범위 바깥
+    assert math.hypot(path[-1][0] - 1.7, path[-1][1]) < 0.2                # 목표 근처
+
+
+def test_goal_on_cone_far_away_still_moves():
+    # 멀리 있는 목표에 꼬깔이 잠깐 겹쳐도 길 없음(None)이 아니라 가까운 곳으로 가는 길을 줌
+    pl = make_planner()
+    pl.set_obstacles([(2.0, 0.0, 0.1)])
+    path = pl.plan((-3.0, 0.0), (2.1, 0.0))
+    assert path is not None and pl.goal_moved
+    assert math.hypot(path[-1][0] - 2.1, path[-1][1]) < 0.5
 
 
 def test_ball_in_the_way_is_avoided():

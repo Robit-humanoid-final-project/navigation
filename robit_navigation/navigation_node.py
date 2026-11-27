@@ -167,6 +167,8 @@ class NavigationNode(Node):
         self.teammate_planned = None   # 경로 계획할 때 쓴 다른 로봇 위치
         self.teammate_speed = SpeedEstimator()
         self.path = None
+        self.planned_goal = None   # 마지막으로 계획한 목표 (같은 목표면 지금 쪽 유지)
+        self.goal_moved = False    # 목표가 막혀서 가까운 곳으로 바꿔 가는 중
         self.need_replan = False
         self.last_plan_time = None
         self.last_step_time = None
@@ -349,13 +351,19 @@ class NavigationNode(Node):
         # 다른 로봇 = 움직이는 꼬깔 (다른 로봇 때문에 길이 없으면 빼고 다시: 곧 비킬 테니까)
         # 한 번 정한 쪽 유지: 목표가 거의 그대로면(30cm 안, 공 흔들림 포함) 지금 길 근처를 더 싸게
         old = self.path
-        same_goal = old is not None and math.hypot(old[-1][0] - self.goal[0], old[-1][1] - self.goal[1]) < 0.3
+        same_goal = (old is not None and self.planned_goal is not None and
+                     math.hypot(self.planned_goal[0] - self.goal[0], self.planned_goal[1] - self.goal[1]) < 0.3)
         self.planner.set_prefer(old if same_goal else None, self.keep_side_cost)
         self.path = plan_with_teammate(self.planner, self.robot[:2], self.goal[:2], self.obstacles,
                                        mate, self.teammate_radius,
                                        ball, self.ball_radius)
+        self.planned_goal = self.goal[:2]
+        self.goal_moved = self.path is not None and self.planner.goal_moved
         self.last_plan_time = self.get_clock().now()
         self.need_replan = False
+        if self.goal_moved:
+            self.get_logger().warn('목표가 꼬깔·공·다른 로봇 범위 안 -> 목표에서 가장 가까운 갈 수 있는 곳으로 감',
+                                   throttle_duration_sec=5.0)
         if self.path is None:
             # 같은 경고가 계속 쌓이지 않게 5초에 한 번만 출력
             self.get_logger().warn(
@@ -381,8 +389,11 @@ class NavigationNode(Node):
             return
         if self.time_to_replan():
             self.replan()
-        if self.path is None:
-            self.publish(cmd, 'BLOCKED')       # 갈 길이 없으면 멈추고 알린다
+        if self.path is None or (self.goal_moved and math.hypot(
+                self.path[-1][0] - self.robot[0], self.path[-1][1] - self.robot[1]) < max(self.default_tol[0], 0.15)):
+            # 갈 길이 없거나, 목표가 막혀서 가장 가까운 곳까지 왔는데 아직 막혀 있으면 멈추고 알린다
+            # (멀리 있을 때 잠깐 겹친 건 BLOCKED 아님: 가까운 곳으로 계속 가다가 다시 계획)
+            self.publish(cmd, 'BLOCKED')
             self.publish_debug(None)
             return
 

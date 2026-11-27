@@ -22,9 +22,13 @@ def test_path_stays_inside():
     assert all(p.is_free_point(x, y) for x, y in path[1:])
 
 
-def test_goal_on_line_is_rejected():
-    assert make_planner().plan((0.0, 0.0), (4.45, 0.0)) is None   # 목표가 선 바로 옆
-    assert make_planner().plan((0.0, 0.0), (0.0, 3.5)) is None    # 목표가 필드 밖
+def test_goal_on_line_goes_to_nearest_free():
+    # 목표가 선 바로 옆(선 띠 안): 포기하지 않고 목표에서 가장 가까운 갈 수 있는 곳까지 감
+    pl = make_planner()
+    path = pl.plan((0.0, 0.0), (4.45, 0.0))
+    assert path is not None and pl.goal_moved
+    assert pl.is_free_point(*path[-1]) and path[-1][0] < 4.45
+    assert make_planner().plan((0.0, 0.0), (0.0, 3.5)) is None    # 목표가 필드 밖은 못 감
 
 
 def test_start_on_line_can_escape():
