@@ -117,6 +117,7 @@ class ControllerParams:
     # 앞걸음 위주 (휴머노이드는 옆걸음·뒷걸음이 느리고 잘 넘어짐)
     turn_in_place: float = math.radians(30.0)   # 가려는 쪽이 이 각도보다 벗어나면 제자리 회전
     walk_again: float = math.radians(15.0)      # 이 각도보다 작아지면 다시 걷기 (떨림 방지)
+    slow_down: float = math.radians(10.0)       # 이 각도 안으로 틀어진 건 앞걸음을 안 줄임 (로컬 방향이 조금 튀어도 속도 일정)
     near_dist: float = 0.3         # 목표가 이 거리 안이면 마지막 방향 보면서 옆걸음으로 맞춤 (m)
     max_side: float = 0.05         # 멀 때 옆걸음 최대 (m/s)
     max_side_near: float = 0.15    # 가까울 때 옆걸음 최대 (m/s)
@@ -193,12 +194,45 @@ def read_walking_parm(path):
         return None
 
 
+class CmdSmoother:
+    """
+    명령 부드럽게 (Bit-Bots smoothing_tau 와 같은 방식, 지수 이동 평균)
+    - 새 명령을 바로 쓰지 않고 이전 명령과 섞음: tau 초 지나면 새 값의 63% 만큼 바뀜
+      -> 방향이 조금 튀어도 앞 30 -> 10 처럼 확 떨어지지 않고 천천히 바뀜 (보행이 덜 휘청임)
+    - 앞·옆이 0이 되는 것(멈춤, 제자리 회전, 꼬깔 앞 정지)과 방향이 바뀌는 것은 바로 적용 (안전)
+    - tau = 0 이면 안 씀
+    """
+
+    def __init__(self, tau=0.2):
+        self.tau = tau
+        self.last = None
+
+    def reset(self):
+        self.last = None
+
+    def step(self, front, left, turn, dt):
+        new = (front, left, turn)
+        if self.tau <= 0.0 or self.last is None or dt <= 0.0:
+            self.last = new
+            return new
+        a = 1.0 - math.exp(-dt / self.tau)
+        out = []
+        for k, (n, o) in enumerate(zip(new, self.last)):
+            if k < 2 and (n == 0.0 or n * o < 0.0):
+                out.append(n)                     # 앞·옆: 멈춤이나 방향 바뀜은 바로
+            else:
+                out.append(o + a * (n - o))
+        self.last = tuple(out)
+        return self.last
+
+
 class ForwardWalk:
     """
     앞걸음 위주로 한 점을 향해 걷기
     - 그 점이 정면에서 turn_in_place 보다 벗어나 있으면: 제자리에서 돌기만 (앞·옆 0)
     - walk_again 보다 정면에 가까워지면 다시 걷기 (두 값을 다르게 해서 경계에서 떨지 않게)
-    - 걸을 때: 앞 속도는 정면에서 벗어난 만큼 줄이고, 옆걸음은 max_side, 뒷걸음은 max_back 까지만
+    - 걸을 때: 앞 속도는 정면에서 slow_down 보다 벗어난 만큼 줄이고, 옆걸음은 max_side, 뒷걸음은 max_back 까지만
+      (slow_down 안쪽은 안 줄임: 로컬 방향이 몇 도씩 튀어도 앞 속도가 출렁이지 않게)
     """
 
     def __init__(self, params):
@@ -208,8 +242,12 @@ class ForwardWalk:
     def reset(self):
         self.turning = False
 
-    def step(self, front, left, front_pid, left_pid, turn_pid, dt, use_i):
-        """front, left: 그 점의 로봇 기준 위치. 반환: (앞, 왼쪽, 회전) 속도"""
+    def step(self, front, left, front_pid, left_pid, turn_pid, dt, use_i, speed_dist=None):
+        """
+        front, left: 그 점의 로봇 기준 위치. 반환: (앞, 왼쪽, 회전) 속도
+        speed_dist: 앞 속도를 정할 거리 (경로 따라갈 때 = 목표까지 남은 경로 길이, Bit-Bots 방식)
+                    None 이면 그 점까지 앞 거리
+        """
         p = self.p
         err = math.atan2(left, front)                 # 그 점이 정면에서 몇 도 벗어났나
         if not self.turning and abs(err) > p.turn_in_place:
@@ -221,8 +259,11 @@ class ForwardWalk:
             front_pid.reset()                         # 서 있는 동안 I가 쌓이지 않게
             left_pid.reset()
             return 0.0, 0.0, turn
-        scale = max(0.0, 1.0 - abs(err) / p.turn_in_place)   # 정면에서 벗어날수록 천천히
-        f = max(-p.max_back, front_pid.update(front, dt, use_i, p.max_move) * scale)
+        # 정면에서 slow_down 보다 벗어난 만큼 천천히 (turn_in_place 에서 0)
+        over = max(0.0, abs(err) - p.slow_down)
+        scale = max(0.0, 1.0 - over / max(p.turn_in_place - p.slow_down, 1e-6))
+        f = max(-p.max_back, front_pid.update(front if speed_dist is None else speed_dist,
+                                              dt, use_i, p.max_move) * scale)
         l = left_pid.update(left, dt, use_i, p.max_side)
         return f, l, turn
 
@@ -376,7 +417,8 @@ class PathFollower:
             c -= 1
         c = min(max(c, nearest + 1), n - 1)
         front, left = field_to_robot(robot, path[c][0], path[c][1])
-        f, l, t = self.walk.step(front, left, self.front_pid, self.left_pid, self.turn_pid, dt, False)
+        # 앞 속도는 목표까지 남은 경로 길이로 정함 (멀면 계속 최대 속도, Bit-Bots 방식)
+        f, l, t = self.walk.step(front, left, self.front_pid, self.left_pid, self.turn_pid, dt, False, remain)
         return self.check_motion(robot, Command(front=f, left=l, turn=t, remain=remain, carrot=tuple(path[c])),
                                  path[c])
 

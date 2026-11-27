@@ -101,3 +101,28 @@ def test_no_corner_cut_behind_cone():
         closest = min(closest, math.hypot(x, y))
     assert arrived
     assert closest > 0.25        # 로봇 반지름 0.15 + 꼬깔 0.1 = 0.25 보다 가까우면 부딪힘
+
+
+def test_small_heading_error_keeps_speed():
+    # 10도 안으로 틀어진 건 앞걸음을 안 줄임 (로컬 방향이 조금 튀어도 속도 일정)
+    from robit_navigation.nav_core import ForwardWalk
+    p = ControllerParams()
+    w = ForwardWalk(p)
+    fp, lp, tp = p.move_pid(), p.move_pid(), p.turn_pid()
+    for deg in (0, 5, 9):
+        a = math.radians(deg)
+        f, _, _ = w.step(math.cos(a), math.sin(a), fp, lp, tp, 0.1, False)
+        assert abs(f - p.max_move) < 1e-9
+    a = math.radians(20)
+    f, _, _ = w.step(math.cos(a), math.sin(a), fp, lp, tp, 0.1, False)
+    assert 0.0 < f < p.max_move                                    # 10도 넘으면 줄임
+
+
+def test_cmd_smoother():
+    from robit_navigation.nav_core import CmdSmoother
+    s = CmdSmoother(0.2)
+    assert s.step(0.3, 0.0, 0.0, 0.1) == (0.3, 0.0, 0.0)           # 처음은 그대로
+    f, _, _ = s.step(0.1, 0.0, 0.0, 0.1)
+    assert 0.1 < f < 0.3                                            # 30 -> 10 이 확 안 떨어짐
+    assert s.step(0.0, 0.0, 0.5, 0.1)[0] == 0.0                     # 멈춤(앞 0)은 바로
+    assert CmdSmoother(0.0).step(0.1, 0.0, 0.0, 0.1) == (0.1, 0.0, 0.0)   # tau 0 = 안 씀

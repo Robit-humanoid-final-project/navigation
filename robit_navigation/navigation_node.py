@@ -58,7 +58,7 @@ from humanoid_interfaces.msg import Master2IkMsg, NavCommand, NavFeedback, World
 from robit_navigation.astar import GridPlanner
 from robit_navigation.teammate import (SpeedEstimator, look_ahead_point, plan_with_teammate,
                                       should_yield, too_close)
-from robit_navigation.nav_core import ControllerParams, PathFollower, path_remaining, read_walking_parm, to_walk
+from robit_navigation.nav_core import CmdSmoother, ControllerParams, PathFollower, path_remaining, read_walking_parm, to_walk
 from robit_navigation.obstacle_memory import ObstacleMemory, ObstacleMemoryParams
 
 FRAME = 'map'
@@ -81,6 +81,8 @@ TUNABLE = {
     # 앞걸음 위주 (휴머노이드는 옆걸음·뒷걸음이 느리고 잘 넘어짐)
     'turn_in_place_deg': 30.0, # 가려는 쪽이 이 각도보다 벗어나면 제자리 회전
     'walk_again_deg': 15.0,    # 이 각도보다 작아지면 다시 걷기
+    'slow_down_deg': 10.0,     # 이 각도 안으로 틀어진 건 앞걸음을 안 줄임 (로컬 방향이 조금 튀어도 속도 일정)
+    'cmd_smoothing_tau': 0.2,  # 명령 부드럽게: 새 명령이 63% 반영되는 시간 (s), 0 = 안 씀 (Bit-Bots smoothing_tau)
     'near_dist': 0.3,          # 목표가 이 거리 안이면 마지막 방향 보면서 옆걸음으로 맞춤 (m)
     'max_side': 0.05,          # 멀 때 옆걸음 최대 (m/s)
     'max_side_near': 0.15,     # 가까울 때 옆걸음 최대 (m/s)
@@ -230,12 +232,13 @@ class NavigationNode(Node):
             d_alpha=p('d_alpha'), max_move=p('max_move'), max_turn=p('max_turn'),
             tol_dist=p('tol_dist'), tol_yaw=math.radians(p('tol_yaw_deg')),
             turn_in_place=math.radians(p('turn_in_place_deg')),
-            walk_again=math.radians(p('walk_again_deg')),
+            walk_again=math.radians(p('walk_again_deg')), slow_down=math.radians(p('slow_down_deg')),
             near_dist=p('near_dist'), max_side=p('max_side'),
             max_side_near=p('max_side_near'), max_back=p('max_back'), latch=p('arrive_latch'))
         self.cone_radius = p('cone_radius')
         self.replan_period = p('replan_period')
         self.keep_side_cost = p('keep_side_cost')
+        self.smoother = CmdSmoother(p('cmd_smoothing_tau'))
         self.require_localized = bool(self.get_parameter('require_localized').value)
         self.ball_radius = p('ball_radius')
         self.teammate_radius = p('teammate_radius')
@@ -420,7 +423,11 @@ class NavigationNode(Node):
                 return
 
         c = self.follower.step(self.robot, self.path, self.goal, dt)
-        cmd.linear.x, cmd.linear.y, cmd.angular.z = c.front, c.left, c.turn
+        if c.arrived:
+            self.smoother.reset()
+        else:
+            # 명령 부드럽게 (값이 확 튀지 않게, 멈춤은 바로)
+            cmd.linear.x, cmd.linear.y, cmd.angular.z = self.smoother.step(c.front, c.left, c.turn, dt)
         self.remain = c.remain
         self.publish(cmd, 'ARRIVED' if c.arrived else 'MOVING')
         self.publish_debug(None if c.arrived else c.carrot)
@@ -429,6 +436,8 @@ class NavigationNode(Node):
         # 팀 약속 (NavCommand.nav_enable: "True일 때만 Walk"):
         #   목표가 있을 때(nav_enable = true)만 master2ik를 보냄. false면 하나도 안 보냄 (멈추는 건 Taskplanner가 보냄)
         # nav_enable 이 false면 보행 명령(master2ik)을 절대 보내지 않음
+        if status != 'MOVING':
+            self.smoother.reset()       # 멈췄다가 다시 걸을 때는 0부터 부드럽게
         if self.nav_enable and self.goal is not None:
             fp = self.follower.p
             x, y, yaw, flag = to_walk(cmd.linear.x, cmd.linear.y, cmd.angular.z,
