@@ -165,3 +165,17 @@ def test_read_walking_parm(tmp_path):
     f.write_text("/**:\n  ros__parameters:\n    Nav_test_X: 20\n    Nav_test_side_L: 8\n    Nav_test_Yaw_L: 4\n")
     assert read_walking_parm(str(f)) == {'ik_max_x': 20.0, 'ik_max_y': 8.0, 'ik_max_yaw': 4.0}
     assert read_walking_parm(str(tmp_path / 'none.yaml')) is None      # 파일 없음
+
+
+def test_cones_every_3_seconds():
+    # Localization이 꼬깔을 3초에 한 번 보내고 사이에는 빈 값: 노드 기본값이면 계속 있어야 함 (안 깜빡임)
+    mem = ObstacleMemory(ObstacleMemoryParams(min_hits=1, forget_time=4.0, smoothing=1.0))
+    for k in range(100):                                       # 10초 (0.1초마다)
+        cones = [(1.5, 0.1 if (k // 30) % 2 else 0.0)] if k % 30 == 0 else []
+        mem.update_field((0.0, 0.0, 0.0), cones, 0.1 * k)
+        assert len(mem.confirmed()) == 1
+    assert mem.confirmed()[0] == (1.5, 0.1)                    # 마지막에 받은 위치 그대로
+    # 꼬깔이 진짜 없어지면(더 안 옴) 4초 뒤 지움
+    for k in range(100, 160):
+        mem.update_field((0.0, 0.0, 0.0), [], 0.1 * k)
+    assert mem.confirmed() == []

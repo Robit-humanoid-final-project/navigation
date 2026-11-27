@@ -116,12 +116,16 @@ ros2 launch robit_navigation robot.launch.py gui:=false       # UI 없이 (Taskp
 Localization(`world_model`)은 지금 카메라에 보이는 꼬깔만 필드 기준으로 알려줌. 그대로 쓰면 고개를 돌리는 순간 꼬깔이 사라짐. 그래서:
 
 1. 받은 꼬깔을 기억
-2. 같은 꼬깔을 다시 보면 위치를 조금씩 보정 (`merge_dist` 0.5m 안 = 같은 꼬깔)
-3. 두 번 이상 본 꼬깔만 인정 (`min_hits`, 한 번 잘못 본 것 무시)
-4. 카메라에 보여야 할 곳인데 `forget_time`초 동안 안 보이면 지움 (카메라 시야 `view_angle_deg`, `view_range`는 실제 카메라와 맞추기)
+2. 같은 꼬깔을 다시 받으면 위치를 새 값 쪽으로 옮김 (`merge_dist` 0.5m 안 = 같은 꼬깔, `cone_smoothing` 1 = 새 값으로 바로)
+3. `min_hits`번 받은 꼬깔만 인정
+4. 카메라에 보여야 할 곳인데 `forget_time`초 동안 안 들어오면 지움 (카메라 시야 `view_angle_deg`, `view_range`는 실제 카메라와 맞추기)
 5. 카메라 밖이어도 `max_unseen_time`초(기본 10초) 동안 다시 안 보이면 지움 (유령 꼬깔 방지)
 6. 필드 밖에 보인 꼬깔은 버림
 7. UI **꼬깔 기억 지우기** 버튼: 한 번에 지우기 (내 위치가 크게 틀렸다가 다시 잡혔을 때)
+
+**Localization이 꼬깔을 3초에 한 번(3초 평균) 보내는 것에 맞춘 값** (기본값):
+`min_hits` 1, `forget_time` 4초, `cone_smoothing` 1.0 → 받으면 바로 인정하고 그 위치에 두고, 다음 값(3초 뒤)이 올 때까지 그대로 유지
+(Localization이 매 프레임 보내면 `min_hits` 2, `forget_time` 2, `cone_smoothing` 0.3 으로 되돌리기)
 
 꼬깔 위치를 **고정하지 않음**: 내 위치(특히 방향)가 틀린 순간에 고정되면 틀린 위치가 계속 남기 때문. 다시 보면 새 위치로 바뀜 (RoboCup Bit-Bots도 같은 방식)
 
@@ -183,7 +187,7 @@ ros2 param list /navigation_node
 ```
 
 - 실행 중 변경 가능: PID, 속도, 허용 오차, 도착 래치(`arrive_latch`), 크기·여유, 걷는 방식, 다른 로봇 피하기, ik_max_x/y/yaw (UI 탭에 있는 값 포함)
-- 시작할 때만: rate, field_length, field_width, grid_resolution, view_angle_deg, view_range, merge_dist, min_hits, forget_time, max_unseen_time
+- 시작할 때만: rate, field_length, field_width, grid_resolution, view_angle_deg, view_range, merge_dist, min_hits, forget_time, cone_smoothing, max_unseen_time
 - 잘못된 값(음수 등)은 거부됨. 껐다 켜면 navigation_node.py 기본값으로 돌아감
 
 ## 테스트
