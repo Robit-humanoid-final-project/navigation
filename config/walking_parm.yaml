@@ -4,8 +4,8 @@ ros__parameters:
     Nav_test_X: 30.00
     Nav_test_side_R: -10.00
     Nav_test_side_L: 10.00
-    Nav_test_Yaw_R: -10.00
-    Nav_test_Yaw_L: 10.00
+    Nav_test_Yaw_R: -5.00
+    Nav_test_Yaw_L: 5.00
 
     # Task_Planner
     ## 공이 근접했을 때 사용

@@ -116,12 +116,11 @@ STARTUP_ONLY = {
     'view_angle_deg': 60.0,    # 카메라 시야 전체 각도
     'view_range': 3.0,         # 카메라가 꼬깔을 볼 수 있는 거리 (m)
     'merge_dist': 0.5,         # 이 거리 안이면 같은 꼬깔 (카메라가 흔들려도 같은 꼬깔로 묶이게)
-    # Localization이 꼬깔을 3초에 한 번 (3초 평균으로) 보내는 것에 맞춘 값:
-    #   받으면 바로 인정하고 그 위치로 바꾸고, 다음 값이 올 때까지(3초) 안 지우고 그대로 둠
-    #   (매 프레임 보내면: min_hits 2, forget_time 2.0, cone_smoothing 0.3)
-    'min_hits': 1,             # 몇 번 봐야 진짜 꼬깔로 인정
-    'forget_time': 4.0,        # 보여야 할 곳에서 이만큼 안 보이면 지움 (s). Localization 보내는 간격(3초)보다 길게
-    'cone_smoothing': 1.0,     # 다시 받으면 위치를 얼마나 새 값 쪽으로 옮길지 (1 = 새 값으로 바로 바꿈, 0.3 = 30%만)
+    # Localization이 꼬깔을 매 프레임 보낼 때 값
+    #   (3초에 한 번 보내면: min_hits 1, forget_time 4.0, cone_smoothing 1.0 = 받으면 바로 인정, 다음 값까지 유지)
+    'min_hits': 2,             # 몇 번 봐야 진짜 꼬깔로 인정
+    'forget_time': 2.0,        # 보여야 할 곳에서 이만큼 안 보이면 지움 (s). Localization 보내는 간격보다 길게
+    'cone_smoothing': 0.3,     # 다시 받으면 위치를 얼마나 새 값 쪽으로 옮길지 (1 = 새 값으로 바로 바꿈, 0.3 = 30%만)
     'max_unseen_time': 10.0,   # 카메라 밖이어도 이만큼 다시 안 보이면 지움 (s), 0 = 안 지움 (유령 꼬깔 방지)
     # 보행 담당 yaml. '' = 우리 패키지 config/walking_parm.yaml. 없으면 위 ik_max 값 사용
     'walking_parm_file': '',
